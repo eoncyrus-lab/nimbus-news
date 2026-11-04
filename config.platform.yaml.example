@@ -39,15 +39,6 @@ channels:
         - "${DISCORD_WEBHOOK_2}"
         - "${DISCORD_WEBHOOK_3}"
 
-  # news→nimbus 数据桥：实时新闻追加为 JSONL，nimbus 的 news-bridge skill 读取
-  - name: "news-feed"
-    type: "filefeed"
-    mode: "push"
-    options:
-      path: "~/nimbus-os/nimbus/workspace/feed/breaking.jsonl"
-      v2_path: "~/nimbus-os/nimbus/workspace/feed/breaking.v2.jsonl"
-      max_lines: 2000
-
 # ── Sources ───────────────────────────────────────────────────────────────────
 
 sources:
@@ -65,30 +56,15 @@ sources:
     type: "rss"
     url: "https://ch2rss.fflow.net/BWEtradfi"
     interval: 120
-    sinks: ["wechat-main", "discord-webhook", "news-feed"]
+    sinks: ["wechat-main", "discord-webhook"]
     routing:
-      ai_policy: required
+      # 无 AI 模式：不做评分，是否即时推送只由每日配额决定；配额用尽后回落 digest。
+      ai_policy: bypass
       on_ai_failure: silent
-      critical_keywords:
-        - "rate decision"
-        - "interest rate decision"
-        - "emergency intervention"
-        - "currency intervention"
-        - "sanctions"
-        - "war escalation"
-        - "trading halt"
-        - "market halt"
-        - "央行决定"
-        - "紧急干预"
-        - "制裁"
-        - "战争升级"
-        - "停牌"
-        - "违约"
-      # 2026-11-04 降噪：去掉过宽的 "default"（正文里 "by default" 也会命中），
-      # direct 8→2，避免快讯源一天几十条即时推送。
-      direct: {min_score: 8.5, max_per_day: 2, priority: 70}
-      digest: {min_score: 7, max_per_day: 2, priority: 30, briefing_target: news_aggregate}
-      default: silent
+      # 2026-11-04 降噪：direct 8→2，避免快讯源一天几十条即时推送。
+      direct: {max_per_day: 2, priority: 70}
+      digest: {max_per_day: 2, priority: 30, briefing_target: news_aggregate}
+      default: direct
     options:
       max_age_hours: 2
       tags: ["机构", "对冲基金", "TradFi"]
@@ -99,25 +75,14 @@ sources:
     type: "rss"
     url: "https://ch2rss.fflow.net/TheKobeissiLetter"
     interval: 300  # 分析型，不需要高频
-    sinks: ["wechat-main", "discord-webhook", "news-feed"]
+    sinks: ["wechat-main", "discord-webhook"]
     routing:
-      ai_policy: required
+      # 无 AI 模式：不做评分，是否即时推送只由每日配额决定；配额用尽后回落 digest。
+      ai_policy: bypass
       on_ai_failure: silent
-      critical_keywords:
-        - "liquidity crisis"
-        - "liquidity shock"
-        - "circuit breaker"
-        - "trading halt"
-        - "largest inflow"
-        - "largest outflow"
-        - "record inflow"
-        - "record outflow"
-        - "极端流动性"
-        - "熔断"
-        - "历史最大资金流"
-      direct: {min_score: 9, max_per_day: 1, priority: 60}
-      digest: {min_score: 7, max_per_day: 2, priority: 40, briefing_target: news_aggregate}
-      default: silent
+      direct: {max_per_day: 1, priority: 60}
+      digest: {max_per_day: 2, priority: 40, briefing_target: news_aggregate}
+      default: direct
     options:
       max_age_hours: 12
       tags: ["宏观", "市场", "分析"]
@@ -128,30 +93,15 @@ sources:
     type: "rss"
     url: "https://hub.wurang.net/telegram/channel/WalterBloomberg"
     interval: 180
-    sinks: ["wechat-main", "discord-webhook", "news-feed"]
+    sinks: ["wechat-main", "discord-webhook"]
     routing:
-      ai_policy: required
+      # 无 AI 模式：不做评分，是否即时推送只由每日配额决定；配额用尽后回落 digest。
+      ai_policy: bypass
       on_ai_failure: silent
-      critical_keywords:
-        - "rate decision"
-        - "interest rate"
-        - "central bank"
-        - "treasury yield"
-        - "10-year"
-        - "oil loadings"
-        - "oil supply"
-        - "sanctions"
-        - "iran"
-        - "央行"
-        - "利率"
-        - "收益率"
-        - "制裁"
-        - "伊朗"
-      # 2026-11-04 降噪：去掉 china/中国/tariff/关税/oil/原油 这类每条快讯都会命中的
-      # 宽词——它们此前绕过配额直推，是"推送太多"的最大来源。direct 12→3，digest 8→5。
-      direct: {min_score: 8, max_per_day: 3, priority: 75}
-      digest: {min_score: 7, max_per_day: 5, priority: 45, briefing_target: news_aggregate}
-      default: digest
+      # 2026-11-04 降噪：direct 12→3，digest 8→5。
+      direct: {max_per_day: 3, priority: 75}
+      digest: {max_per_day: 5, priority: 45, briefing_target: news_aggregate}
+      default: direct
     options:
       max_age_hours: 2
       tags: ["宏观", "市场", "快讯"]
@@ -182,12 +132,12 @@ sources:
     type: "rss"
     url: "https://www.federalreserve.gov/feeds/speeches.xml"
     interval: 900
-    sinks: ["wechat-main", "discord-webhook", "news-feed"]
+    sinks: ["wechat-main", "discord-webhook"]
     routing:
       ai_policy: required
-      on_ai_failure: silent
+      on_ai_failure: digest
       digest: {min_score: 8, max_per_day: 2, priority: 40, briefing_target: news_aggregate}
-      default: silent
+      default: digest
     options:
       max_age_hours: 12
       fetch_linked_body: false
@@ -196,7 +146,7 @@ sources:
     type: "rss"
     url: "https://www.federalreserve.gov/feeds/press_all.xml"
     interval: 900
-    sinks: ["wechat-main", "discord-webhook", "news-feed"]
+    sinks: ["wechat-main", "discord-webhook"]
     routing:
       critical: true
       ai_policy: bypass
@@ -225,12 +175,12 @@ sources:
     type: "rss"
     url: "https://www.bloomberg.com/feeds/markets/news.rss"
     interval: 300
-    sinks: ["wechat-main", "discord-webhook", "news-feed"]
+    sinks: ["wechat-main", "discord-webhook"]
     routing:
       ai_policy: required
-      on_ai_failure: silent
+      on_ai_failure: digest
       digest: {min_score: 8.5, max_per_day: 3, priority: 50, briefing_target: news_aggregate}
-      default: silent
+      default: digest
     options:
       max_age_hours: 4
       fetch_linked_body: false
@@ -245,12 +195,12 @@ sources:
     type: "rss"
     url: "https://www.bloomberg.com/feeds/economics/news.rss"
     interval: 300
-    sinks: ["wechat-main", "discord-webhook", "news-feed"]
+    sinks: ["wechat-main", "discord-webhook"]
     routing:
       ai_policy: required
-      on_ai_failure: silent
+      on_ai_failure: digest
       digest: {min_score: 8.5, max_per_day: 2, priority: 50, briefing_target: news_aggregate}
-      default: silent
+      default: digest
     options:
       max_age_hours: 4
       fetch_linked_body: false
@@ -267,25 +217,15 @@ sources:
     type: "rss"
     url: "https://www.bloomberg.com/feeds/politics/news.rss"
     interval: 300
-    sinks: ["wechat-main", "discord-webhook", "news-feed"]
+    sinks: ["wechat-main", "discord-webhook"]
     routing:
-      ai_policy: required
+      # 无 AI 模式：不做评分，是否即时推送只由每日配额决定；配额用尽后回落 digest。
+      ai_policy: bypass
       on_ai_failure: silent
-      critical_keywords:
-        - "sanctions"
-        - "executive order"
-        - "debt ceiling"
-        - "government shutdown"
-        - "Fed Chair"
-        - "Treasury Secretary"
-        - "SEC Chair"
-        - "制裁"
-        - "债务上限"
-        - "政府停摆"
-      # 2026-11-04 降噪：tariff/regulation/关税 属高频政策词，改走评分带；direct 3→2。
-      direct: {min_score: 8.5, max_per_day: 2, priority: 60}
-      digest: {min_score: 8.5, max_per_day: 2, priority: 40, briefing_target: news_aggregate}
-      default: silent
+      # 2026-11-04 降噪：direct 3→2。
+      direct: {max_per_day: 2, priority: 60}
+      digest: {max_per_day: 2, priority: 40, briefing_target: news_aggregate}
+      default: direct
     options:
       max_age_hours: 4
       fetch_linked_body: false
@@ -301,20 +241,14 @@ sources:
     type: "rss"
     url: "https://investinglive.com/feed/news"
     interval: 120  # 突发快讯，越快越好
-    sinks: ["wechat-main", "discord-webhook", "news-feed"]
+    sinks: ["wechat-main", "discord-webhook"]
     routing:
-      ai_policy: required
+      # 无 AI 模式：不做评分，是否即时推送只由每日配额决定；配额用尽后回落 digest。
+      ai_policy: bypass
       on_ai_failure: silent
-      critical_keywords:
-        - "rate decision"
-        - "interest rate decision"
-        - "central bank decision"
-        - "intervention"
-        - "央行决定"
-        - "干预"
-      direct: {min_score: 8, max_per_day: 2, priority: 70}
-      digest: {min_score: 6.5, max_per_day: 2, priority: 30, briefing_target: news_aggregate}
-      default: silent
+      direct: {max_per_day: 2, priority: 70}
+      digest: {max_per_day: 2, priority: 30, briefing_target: news_aggregate}
+      default: direct
     options:
       max_age_hours: 1
       tags: ["外汇", "宏观", "快讯"]
@@ -325,12 +259,12 @@ sources:
     type: "rss"
     url: "https://www.eia.gov/rss/todayinenergy.xml"
     interval: 600
-    sinks: ["wechat-main", "discord-webhook", "news-feed"]
+    sinks: ["wechat-main", "discord-webhook"]
     routing:
       ai_policy: required
-      on_ai_failure: silent
+      on_ai_failure: digest
       digest: {min_score: 7.5, max_per_day: 2, priority: 30, briefing_target: news_aggregate}
-      default: silent
+      default: digest
     options:
       max_age_hours: 12
       fetch_linked_body: false

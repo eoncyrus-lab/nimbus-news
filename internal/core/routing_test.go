@@ -315,6 +315,46 @@ func TestTypedDirectQuotaDowngradesAndPriorityIsBounded(t *testing.T) {
 	}
 }
 
+func TestTypedBypassDirectQuotaOverflowFallsBackToDigest(t *testing.T) {
+	store := &typedRoutedStore{directAdmission: digest.RouteAdmission{Admitted: false, Lane: digest.RouteDirect}}
+	engine := &NewsEngine{digestStore: store}
+	attachSuccessfulTypedRouter(engine)
+	routing := &config.SourceRoutingConfig{
+		AIPolicy: config.AIPolicyBypass, OnAIFailure: config.RouteDefaultSilent,
+		Default: config.RouteDefaultDirect,
+		Direct:  &config.RouteBand{MaxPerDay: 1, Priority: 20},
+		Digest:  &config.RouteBand{MaxPerDay: 2, Priority: 10, BriefingTarget: "news_aggregate"},
+	}
+	msg := &model.Message{ID: "overflow", Title: "headline", Metadata: map[string]interface{}{}}
+	if !engine.routeTypedMessages(context.Background(), "feed", newsSourceInfo{routing: routing, channels: []string{"main"}}, []*model.Message{msg}) {
+		t.Fatal("route failed")
+	}
+	if store.directCalls != 1 || store.digestCalls != 1 || store.digestRequest.Lane != digest.RouteDigest {
+		t.Fatalf("direct=%d digest=%d lane=%q", store.directCalls, store.digestCalls, store.digestRequest.Lane)
+	}
+	if got := msg.GetStringMetadata("routing_lane"); got != string(digest.RouteDigest) {
+		t.Fatalf("lane metadata=%q", got)
+	}
+}
+
+func TestTypedBypassDirectOverflowWithoutDigestBandStaysSilent(t *testing.T) {
+	store := &typedRoutedStore{directAdmission: digest.RouteAdmission{Admitted: false, Lane: digest.RouteDirect}}
+	engine := &NewsEngine{digestStore: store}
+	attachSuccessfulTypedRouter(engine)
+	routing := &config.SourceRoutingConfig{
+		AIPolicy: config.AIPolicyBypass, OnAIFailure: config.RouteDefaultSilent,
+		Default: config.RouteDefaultDirect,
+		Direct:  &config.RouteBand{MaxPerDay: 1, Priority: 20},
+	}
+	msg := &model.Message{ID: "overflow-silent", Title: "headline", Metadata: map[string]interface{}{}}
+	if !engine.routeTypedMessages(context.Background(), "feed", newsSourceInfo{routing: routing, channels: []string{"main"}}, []*model.Message{msg}) {
+		t.Fatal("route failed")
+	}
+	if store.digestCalls != 0 || msg.GetStringMetadata("routing_lane") != "" {
+		t.Fatalf("digest=%d lane=%q", store.digestCalls, msg.GetStringMetadata("routing_lane"))
+	}
+}
+
 func TestTypedCriticalBypassesAIAndQuotaLimitButRecordsAdmission(t *testing.T) {
 	provider := &typedProvider{response: "1|一般|不应调用"}
 	store := &typedRoutedStore{directAdmission: digest.RouteAdmission{Admitted: true, Lane: digest.RouteDirect}}

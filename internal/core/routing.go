@@ -59,7 +59,7 @@ func (e *NewsEngine) routeTypedMessages(ctx context.Context, sourceName string, 
 				return false
 			}
 			if !admission.Admitted {
-				if digestBandEligible(info.routing.Digest, decision.eval) {
+				if digestBandEligible(info.routing.Digest, decision.eval) || bypassDigestFallback(info.routing) {
 					decision.lane = digest.RouteDigest
 					decision.band = info.routing.Digest
 					msg.SetMetadata("routing_lane", string(decision.lane))
@@ -326,6 +326,13 @@ func bandMatches(band *config.RouteBand, score float64) bool {
 
 func digestBandEligible(band *config.RouteBand, result filter.EvalResult) bool {
 	return result.Status == filter.EvalSuccess && bandMatches(band, result.Score)
+}
+
+// bypassDigestFallback 处理无 AI 评分时的直推配额溢出。ai_policy: bypass 没有
+// 分数可用于比较 digest 的 min_score，因此直推配额用尽后统一回落到 digest 带；
+// 是否真正入队由 digest 自己的每日配额决定，避免消息被静默丢弃。
+func bypassDigestFallback(routing *config.SourceRoutingConfig) bool {
+	return routing != nil && routing.AIPolicy == config.AIPolicyBypass && routing.Digest != nil
 }
 
 func routedPriority(base int, result filter.EvalResult) int {

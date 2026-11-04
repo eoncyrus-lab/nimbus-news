@@ -30,7 +30,7 @@
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>/Users/x/nimbus-os/news/bin/launch-platform.sh</string>
+    <string>/Users/x/nimbus-news/bin/launch-platform.sh</string>
   </array>
 
   <key>KeepAlive</key>
@@ -42,19 +42,20 @@
   <key>ThrottleInterval</key>
   <integer>15</integer>
 
+  <!-- 日志放 ~/Library/Logs：launchd 对 ~/Documents 有 TCC 限制 -->
   <key>StandardOutPath</key>
-  <string>/Users/x/nimbus-os/news/logs/platform.out.log</string>
+  <string>/Users/x/Library/Logs/news-platform.out.log</string>
 
   <key>StandardErrorPath</key>
-  <string>/Users/x/nimbus-os/news/logs/platform.err.log</string>
+  <string>/Users/x/Library/Logs/news-platform.err.log</string>
 
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>/usr/local/bin:/usr/bin:/bin</string>
+    <string>/Users/x/nimbus-os/nimbus/.venv-runtime/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
   </dict>
 
   <key>WorkingDirectory</key>
-  <string>/Users/x/nimbus-os/news</string>
+  <string>/Users/x/nimbus-news</string>
 </dict>
 </plist>

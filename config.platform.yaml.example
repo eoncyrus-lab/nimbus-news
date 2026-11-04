@@ -56,62 +56,15 @@ sources:
   # bwenews-live 已移除（2026-07-18）：公共 WS 端口已死（11.5 天仅 3 条，683 次重连失败刷日志），
   # BWE 内容由 bwenews-rss 覆盖。
 
-  - name: "trump-rss"
-    type: "rss"
-    url: "https://trump.fm/rss.xml"              # 主 feed，避免 analysis 子 feed 停更
-    interval: 300
-    sinks: ["wechat-main", "discord-webhook", "news-feed"]
-    routing:
-      ai_policy: required
-      on_ai_failure: silent
-      critical_keywords:
-        - "tariff"
-        - "sanctions"
-        - "executive order"
-        - "regulation"
-        - "cabinet"
-        - "Treasury Secretary"
-        - "Commerce Secretary"
-        - "Fed Chair"
-        - "SEC Chair"
-        - "关税"
-        - "制裁"
-        - "行政命令"
-        - "监管"
-        - "内阁"
-      direct: {min_score: 8.5, max_per_day: 4, priority: 80}
-      digest: {min_score: 6.5, max_per_day: 2, priority: 40, briefing_target: news_aggregate}
-      default: silent
-    options:
-      max_age_hours: 6
-      exclude_video_only: true
-      exclude_reposts: true
-      fetch_linked_body: true               # 抓取分析页正文
-      linked_body_append: true             # 追加而非替换原文
-      linked_body_hosts: ["trump.fm"]
-      linked_body_max_chars: 800            # 只要摘要+fact check结论
-      tags: ["政治", "政策"]
-      exclude_keywords:
-        - "Rally"
-        - "rally"
-        - "holds hands"
-        - "toddler"
-        - "Pee-wee"
-        - "emotional tribute"
-        - "communist"
-        - "Ga. S"
-        - "blasts"
-        - "mocks"
-        - "Great Honor to endorse"
-        - "basketball player"
-        - "GREAT new song"
-        - "Inauguration on January"
+  # trump-rss 已移除（2026-11-04）：实测 50 条里政策词命中仅 4%，84% 为 FoxNews/民调/
+  # 口水类政治评论；真正的关税/行政命令信号由 bloomberg-politics 与快讯源更快覆盖。
+  # 需要原话时再从 trump.fm 手动查，不再占实时源位。
 
   # 2026-07-18 修复：feed 无 <guid> 导致全部条目同 ID 被去重误杀，ID 改为 GUID→Link 回退。
   - name: "bwe-tradfi"
     type: "rss"
     url: "https://ch2rss.fflow.net/BWEtradfi"
-    interval: 60
+    interval: 120
     sinks: ["wechat-main", "discord-webhook", "news-feed"]
     routing:
       ai_policy: required
@@ -125,18 +78,19 @@ sources:
         - "war escalation"
         - "trading halt"
         - "market halt"
-        - "default"
         - "央行决定"
         - "紧急干预"
         - "制裁"
         - "战争升级"
         - "停牌"
         - "违约"
-      direct: {min_score: 8.5, max_per_day: 8, priority: 70}
-      digest: {min_score: 7, max_per_day: 3, priority: 30, briefing_target: news_aggregate}
+      # 2026-11-04 降噪：去掉过宽的 "default"（正文里 "by default" 也会命中），
+      # direct 8→2，避免快讯源一天几十条即时推送。
+      direct: {min_score: 8.5, max_per_day: 2, priority: 70}
+      digest: {min_score: 7, max_per_day: 2, priority: 30, briefing_target: news_aggregate}
       default: silent
     options:
-      max_age_hours: 3
+      max_age_hours: 2
       tags: ["机构", "对冲基金", "TradFi"]
 
   # Kobeissi Letter —— 数据驱动宏观分析，与 bwe-tradfi 互补（bwe=突发标题, Kobeissi=量化背景）
@@ -161,8 +115,8 @@ sources:
         - "极端流动性"
         - "熔断"
         - "历史最大资金流"
-      direct: {min_score: 9, max_per_day: 2, priority: 60}
-      digest: {min_score: 7, max_per_day: 3, priority: 40, briefing_target: news_aggregate}
+      direct: {min_score: 9, max_per_day: 1, priority: 60}
+      digest: {min_score: 7, max_per_day: 2, priority: 40, briefing_target: news_aggregate}
       default: silent
     options:
       max_age_hours: 12
@@ -173,7 +127,7 @@ sources:
   - name: "walter-bloomberg"
     type: "rss"
     url: "https://hub.wurang.net/telegram/channel/WalterBloomberg"
-    interval: 120
+    interval: 180
     sinks: ["wechat-main", "discord-webhook", "news-feed"]
     routing:
       ai_policy: required
@@ -187,58 +141,23 @@ sources:
         - "oil loadings"
         - "oil supply"
         - "sanctions"
-        - "tariff"
         - "iran"
-        - "china"
         - "央行"
         - "利率"
         - "收益率"
-        - "原油"
         - "制裁"
-        - "关税"
         - "伊朗"
-        - "中国"
-      direct: {min_score: 8, max_per_day: 12, priority: 75}
-      digest: {min_score: 7, max_per_day: 8, priority: 45, briefing_target: news_aggregate}
+      # 2026-11-04 降噪：去掉 china/中国/tariff/关税/oil/原油 这类每条快讯都会命中的
+      # 宽词——它们此前绕过配额直推，是"推送太多"的最大来源。direct 12→3，digest 8→5。
+      direct: {min_score: 8, max_per_day: 3, priority: 75}
+      digest: {min_score: 7, max_per_day: 5, priority: 45, briefing_target: news_aggregate}
       default: digest
     options:
-      max_age_hours: 3
+      max_age_hours: 2
       tags: ["宏观", "市场", "快讯"]
 
-  # First Squawk —— 高频宏观/央行/政府快讯，作为 Walter Bloomberg 的交叉验证源。
-  - name: "first-squawk"
-    type: "rss"
-    url: "https://hub.wurang.net/telegram/channel/firstsquaw"
-    interval: 120
-    sinks: ["wechat-main", "discord-webhook", "news-feed"]
-    routing:
-      ai_policy: required
-      on_ai_failure: silent
-      critical_keywords:
-        - "rate decision"
-        - "interest rate"
-        - "central bank"
-        - "treasury yield"
-        - "10-year"
-        - "oil"
-        - "sanctions"
-        - "tariff"
-        - "iran"
-        - "china"
-        - "央行"
-        - "利率"
-        - "收益率"
-        - "原油"
-        - "制裁"
-        - "关税"
-        - "伊朗"
-        - "中国"
-      direct: {min_score: 8.5, max_per_day: 8, priority: 78}
-      digest: {min_score: 7.5, max_per_day: 5, priority: 48, briefing_target: news_aggregate}
-      default: digest
-    options:
-      max_age_hours: 3
-      tags: ["宏观", "央行", "快讯"]
+  # first-squawk 已移除（2026-11-04）：与 walter-bloomberg 同属一条快讯线，实测头部条目
+  # 完全相同（同一伊朗无人机/WTI 标题），保留 walter 一个即可；跨源重复由去重组兜底。
 
   # MMS News 已移除（2026-06）：ch2rss 代理冻结，最新条目停在 5/27，线上 0 条 / 213 轮，
   # 被 HealthMonitor 反复标记 unhealthy；且为山寨/meme 加密噪音，与 bwenews-live 仅留 BTC/HYPE 的策略相悖。
@@ -313,7 +232,7 @@ sources:
       digest: {min_score: 8.5, max_per_day: 3, priority: 50, briefing_target: news_aggregate}
       default: silent
     options:
-      max_age_hours: 6
+      max_age_hours: 4
       fetch_linked_body: false
       exclude_link_patterns:
         - "/videos/"
@@ -333,7 +252,7 @@ sources:
       digest: {min_score: 8.5, max_per_day: 2, priority: 50, briefing_target: news_aggregate}
       default: silent
     options:
-      max_age_hours: 6
+      max_age_hours: 4
       fetch_linked_body: false
       exclude_link_patterns:
         - "/videos/"
@@ -353,24 +272,22 @@ sources:
       ai_policy: required
       on_ai_failure: silent
       critical_keywords:
-        - "tariff"
         - "sanctions"
         - "executive order"
-        - "regulation"
         - "debt ceiling"
         - "government shutdown"
         - "Fed Chair"
         - "Treasury Secretary"
         - "SEC Chair"
-        - "关税"
         - "制裁"
         - "债务上限"
         - "政府停摆"
-      direct: {min_score: 8.5, max_per_day: 3, priority: 60}
+      # 2026-11-04 降噪：tariff/regulation/关税 属高频政策词，改走评分带；direct 3→2。
+      direct: {min_score: 8.5, max_per_day: 2, priority: 60}
       digest: {min_score: 8.5, max_per_day: 2, priority: 40, briefing_target: news_aggregate}
       default: silent
     options:
-      max_age_hours: 6
+      max_age_hours: 4
       fetch_linked_body: false
       exclude_link_patterns:
         - "/videos/"
@@ -395,8 +312,8 @@ sources:
         - "intervention"
         - "央行决定"
         - "干预"
-      direct: {min_score: 8, max_per_day: 8, priority: 70}
-      digest: {min_score: 6.5, max_per_day: 3, priority: 30, briefing_target: news_aggregate}
+      direct: {min_score: 8, max_per_day: 2, priority: 70}
+      digest: {min_score: 6.5, max_per_day: 2, priority: 30, briefing_target: news_aggregate}
       default: silent
     options:
       max_age_hours: 1
@@ -441,7 +358,7 @@ sources:
 
   - name: "pre-market-briefing"
     type: "market-briefing"
-    schedule: ["09:15", "11:35", "13:05", "15:00"]  # 4时段推送:盘前全景/上午收盘/午后开盘/收盘行情
+    schedule: ["09:15", "11:35", "15:00"]  # 2026-11-04 删 13:05：午后开盘距 11:35 仅 5 分钟，行情几乎无增量
     sinks: ["wechat-main", "discord-webhook"]
     options:
       briefing_type: "pre_market"
@@ -463,6 +380,8 @@ sources:
     type: "market-briefing"
     schedule: ["21:10"]
     sinks: ["wechat-main", "discord-webhook"]
+    # 周末跳过由 fetchUSPreview 内部按美东日期判断（不能用 trading_days_only：
+    # 北京周六 21:10 是美东周五盘前，按北京星期会误杀）。
     options:
       briefing_type: "us_preview"
       python_cmd: "python3"
@@ -479,7 +398,7 @@ sources:
 
   - name: "us-macro-report"
     type: "us-macro-report"
-    schedule: ["21:30"]
+    schedule: ["21:40"]   # 2026-11-04：从 21:30 挪开，避开 econ-calendar(21:00)/us-preview(21:10) 三连发
     sinks: ["wechat-main", "discord-webhook"]
     options:
       api_key: "${FRED_API_KEY}"
@@ -547,7 +466,7 @@ sources:
   # 原 blockbeats-evening 独立源(19:00)与 us-preview 的"资讯摘要"段均并入。
   - name: "news-aggregate-morning"
     type: "market-briefing"
-    schedule: ["09:15"]
+    schedule: ["09:25"]   # 2026-11-04：从 09:15 挪开，避免和 pre-market-briefing 同一分钟连弹
     sinks: ["wechat-main", "discord-webhook"]
     options:
       briefing_type: "aggregate"
@@ -607,15 +526,15 @@ filters:
       - "(?i)^live\\s*:?\\s*https?://"
       - "(?i)^🔴\\s*(live|breaking)\\s*$"
       - "(?i)^pic\\.twitter\\.com"
-    strict_sources:
-      - "trump-rss"
 
   dedup:
     enabled: true
     ttl: 43200  # 12h，配合 max_age_hours: 12
     groups:
       # energy-connects 已禁用(2026-07-31),不在去重组(2026-08-02 清理)
-      - ["trump-rss", "bwe-tradfi", "kobeissi-letter",
+      # 2026-11-04：walter-bloomberg 加入跨源去重组，避免同一标题被 bwe-tradfi 与
+      # 快讯源各推一遍；trump-rss / first-squawk 已移除。
+      - ["bwe-tradfi", "kobeissi-letter", "walter-bloomberg",
          "fed-press", "bloomberg-markets", "bloomberg-economics",
          "bloomberg-politics", "forexlive-breaking"]
     semantic:
@@ -653,9 +572,9 @@ filters:
       - "无价值"
       - "无关"
     target_sources:
-      - "trump-rss"
       - "bwe-tradfi"
       - "kobeissi-letter"
+      - "walter-bloomberg"
       - "fed-press"
       - "bloomberg-markets"
       - "bloomberg-economics"

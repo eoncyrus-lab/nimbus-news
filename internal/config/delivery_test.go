@@ -227,14 +227,10 @@ func TestProductionTypedRoutingUsesNarrowCriticalPolicies(t *testing.T) {
 		t.Fatalf("typed external sources=%d, want 10 (8 RSS + fed-speeches + eia-energy)", externalRouted)
 	}
 
-	assertSourcePolicy(t, sources, "trump-rss", 300, nil, nil,
+	assertSourcePolicy(t, sources, "bwe-tradfi", 120, nil, nil,
 		false, AIPolicyRequired, RouteDefaultSilent, RouteDefaultSilent,
-		&routeBandExpectation{minScore: float64Ptr(8.5), maxPerDay: 4, priority: 80},
-		&routeBandExpectation{minScore: float64Ptr(6.5), maxPerDay: 2, priority: 40, briefingTarget: "news_aggregate"})
-	assertSourcePolicy(t, sources, "bwe-tradfi", 60, nil, nil,
-		false, AIPolicyRequired, RouteDefaultSilent, RouteDefaultSilent,
-		&routeBandExpectation{minScore: float64Ptr(8.5), maxPerDay: 8, priority: 70},
-		&routeBandExpectation{minScore: float64Ptr(7), maxPerDay: 3, priority: 30, briefingTarget: "news_aggregate"})
+		&routeBandExpectation{minScore: float64Ptr(8.5), maxPerDay: 2, priority: 70},
+		&routeBandExpectation{minScore: float64Ptr(7), maxPerDay: 2, priority: 30, briefingTarget: "news_aggregate"})
 	assertSourcePolicy(t, sources, "bloomberg-markets", 300, nil, nil,
 		false, AIPolicyRequired, RouteDefaultSilent, RouteDefaultSilent, nil,
 		&routeBandExpectation{minScore: float64Ptr(8.5), maxPerDay: 3, priority: 50, briefingTarget: "news_aggregate"})
@@ -243,17 +239,21 @@ func TestProductionTypedRoutingUsesNarrowCriticalPolicies(t *testing.T) {
 		&routeBandExpectation{minScore: float64Ptr(8.5), maxPerDay: 2, priority: 50, briefingTarget: "news_aggregate"})
 	assertSourcePolicy(t, sources, "bloomberg-politics", 300, nil, nil,
 		false, AIPolicyRequired, RouteDefaultSilent, RouteDefaultSilent,
-		&routeBandExpectation{minScore: float64Ptr(8.5), maxPerDay: 3, priority: 60},
+		&routeBandExpectation{minScore: float64Ptr(8.5), maxPerDay: 2, priority: 60},
 		&routeBandExpectation{minScore: float64Ptr(8.5), maxPerDay: 2, priority: 40, briefingTarget: "news_aggregate"})
 	assertSourcePolicy(t, sources, "forexlive-breaking", 120, nil, nil,
 		false, AIPolicyRequired, RouteDefaultSilent, RouteDefaultSilent,
-		&routeBandExpectation{minScore: float64Ptr(8), maxPerDay: 8, priority: 70},
-		&routeBandExpectation{minScore: float64Ptr(6.5), maxPerDay: 3, priority: 30, briefingTarget: "news_aggregate"})
-	// These policies are deliberately unchanged by the source tuning above.
+		&routeBandExpectation{minScore: float64Ptr(8), maxPerDay: 2, priority: 70},
+		&routeBandExpectation{minScore: float64Ptr(6.5), maxPerDay: 2, priority: 30, briefingTarget: "news_aggregate"})
+	// 高频快讯源：默认进 digest，只有高置信度或硬事件才即时推送。
+	assertSourcePolicy(t, sources, "walter-bloomberg", 180, nil, nil,
+		false, AIPolicyRequired, RouteDefaultSilent, RouteDefaultDigest,
+		&routeBandExpectation{minScore: float64Ptr(8), maxPerDay: 3, priority: 75},
+		&routeBandExpectation{minScore: float64Ptr(7), maxPerDay: 5, priority: 45, briefingTarget: "news_aggregate"})
 	assertSourcePolicy(t, sources, "kobeissi-letter", 300, nil, nil,
 		false, AIPolicyRequired, RouteDefaultSilent, RouteDefaultSilent,
-		&routeBandExpectation{minScore: float64Ptr(9), maxPerDay: 2, priority: 60},
-		&routeBandExpectation{minScore: float64Ptr(7), maxPerDay: 3, priority: 40, briefingTarget: "news_aggregate"})
+		&routeBandExpectation{minScore: float64Ptr(9), maxPerDay: 1, priority: 60},
+		&routeBandExpectation{minScore: float64Ptr(7), maxPerDay: 2, priority: 40, briefingTarget: "news_aggregate"})
 	assertSourcePolicy(t, sources, "fed-press", 900, nil, nil,
 		true, AIPolicyBypass, RouteDefaultSilent, RouteDefaultSilent,
 		&routeBandExpectation{maxPerDay: 0, priority: 100}, nil)

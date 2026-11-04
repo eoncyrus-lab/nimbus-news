@@ -898,6 +898,15 @@ func (s *MarketBriefingSource) fetchAggregate(parent context.Context) ([]*model.
 // fedwatch + VIX + 关键标的行情 + AI 叙事
 
 func (s *MarketBriefingSource) fetchUSPreview(parent context.Context) ([]*model.Message, error) {
+	// 按美东日期判断美股休市日：北京周六 21:10 对应美东周五盘前（应推送），
+	// 北京周一 21:10 对应美东周日（应跳过），所以不能用本地星期的 trading_days_only。
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		ny = time.FixedZone("America/New_York", -5*60*60)
+	}
+	if wd := time.Now().In(ny).Weekday(); wd == time.Saturday || wd == time.Sunday {
+		return nil, nil
+	}
 	ctx, cancel := context.WithTimeout(parent, 4*time.Minute)
 	defer cancel()
 

@@ -1,0 +1,252 @@
+# guanfu screener — strategy profiles (6D: V=估值 Q=质量 P=潜力 T=技术 F=资金 R=风险)
+
+profiles:
+  - name: "港股价值"
+    market: "HK"
+    style: "value"
+    description: "深度价值: 低PE+低PB+高股息+AH溢价,格雷厄姆"
+    coarse_strategy_id: "18"
+    min_market_cap: 50
+    weights:
+      valuation: 0.28
+      quality: 0.22
+      potential: 0.13
+      technical: 0.12
+      flow: 0.10
+      risk: 0.15
+    core_candidate_min: 65
+    watchlist_min: 50
+
+  - name: "港股成长"
+    market: "HK"
+    style: "growth"
+    description: "盈利高成长+合理估值,避开老千股"
+    coarse_strategy_id: "7"
+    min_market_cap: 10
+    min_heat_rank: 50
+    weights:
+      valuation: 0.15
+      quality: 0.22
+      potential: 0.28
+      technical: 0.15
+      flow: 0.10
+      risk: 0.10
+    core_candidate_min: 65
+    watchlist_min: 50
+
+  - name: "港股高股息"
+    market: "HK"
+    style: "dividend"
+    description: "稳定高息+低负债,收息策略"
+    coarse_strategy_id: "11"
+    min_market_cap: 50
+    weights:
+      valuation: 0.18
+      quality: 0.30
+      potential: 0.07
+      technical: 0.10
+      flow: 0.10
+      risk: 0.25
+    core_candidate_min: 68
+    watchlist_min: 52
+
+  - name: "港股拐点"
+    market: "HK"
+    style: "turnaround"
+    description: "盈利拐点+估值修复,低PB安全边际"
+    coarse_strategy_id: "8"
+    min_market_cap: 5
+    exclude_sectors: ["资产管理和托管银行"]
+    weights:
+      valuation: 0.20
+      quality: 0.12
+      potential: 0.35
+      technical: 0.18
+      flow: 0.10
+      risk: 0.05
+    core_candidate_min: 60
+    watchlist_min: 45
+
+  - name: "港股小盘价值"
+    market: "HK"
+    style: "small_value"
+    description: "小盘深度价值: 低PB+低负债+盈利改善"
+    coarse_strategy_id: "14"
+    min_market_cap: 2
+    max_market_cap: 80
+    weights:
+      valuation: 0.30
+      quality: 0.18
+      potential: 0.20
+      technical: 0.12
+      flow: 0.10
+      risk: 0.10
+    core_candidate_min: 60
+    watchlist_min: 45
+
+  - name: "美股价值"
+    market: "US"
+    style: "value"
+    description: "FCF yield+低EV/EBIT+回购, Buffett框架"
+    coarse_strategy_id: "16"
+    min_market_cap: 50
+    weights:
+      valuation: 0.22
+      quality: 0.25
+      potential: 0.14
+      technical: 0.14
+      flow: 0.10
+      risk: 0.15
+    core_candidate_min: 65
+    watchlist_min: 50
+
+  - name: "美股成长"
+    market: "US"
+    style: "growth"
+    description: "收入+利润双增长+行业地位, CANSLIM"
+    coarse_strategy_id: "15"
+    min_market_cap: 10
+    min_heat_rank: 100
+    weights:
+      valuation: 0.15
+      quality: 0.22
+      potential: 0.28
+      technical: 0.15
+      flow: 0.10
+      risk: 0.10
+    core_candidate_min: 65
+    watchlist_min: 50
+
+  - name: "美股质量"
+    market: "US"
+    style: "quality"
+    description: "高ROIC+稳定利润率+低应计,护城河"
+    coarse_strategy_id: "17"
+    min_market_cap: 100
+    weights:
+      valuation: 0.15
+      quality: 0.35
+      potential: 0.12
+      technical: 0.13
+      flow: 0.10
+      risk: 0.15
+    core_candidate_min: 68
+    watchlist_min: 52
+
+  - name: "美股股息成长"
+    market: "US"
+    style: "dividend"
+    description: "持续增息+合理估值, 股息贵族"
+    coarse_strategy_id: "11"
+    min_market_cap: 100
+    weights:
+      valuation: 0.18
+      quality: 0.30
+      potential: 0.07
+      technical: 0.10
+      flow: 0.10
+      risk: 0.25
+    core_candidate_min: 65
+    watchlist_min: 50
+
+  - name: "美股均衡"
+    market: "US"
+    style: "balanced"
+    description: "GARP: 合理估值+稳健成长+质量"
+    coarse_strategy_id: "17"
+    min_market_cap: 50
+    weights:
+      valuation: 0.20
+      quality: 0.20
+      potential: 0.18
+      technical: 0.15
+      flow: 0.12
+      risk: 0.15
+    core_candidate_min: 63
+    watchlist_min: 48
+
+  - name: "A股价值"
+    market: "A"
+    style: "value"
+    description: "低PE分位+ROE稳定+北向增持,排除ST"
+    coarse_strategy_id: "9"
+    min_market_cap: 20
+    exclude_themes: ["ST", "*ST"]
+    weights:
+      valuation: 0.18
+      quality: 0.22
+      potential: 0.25
+      technical: 0.15
+      flow: 0.10
+      risk: 0.10
+    core_candidate_min: 65
+    watchlist_min: 50
+
+  - name: "A股成长"
+    market: "A"
+    style: "growth"
+    description: "双增+行业地位+主题催化: 科技/新能源/医药"
+    coarse_strategy_id: "7"
+    min_market_cap: 30
+    exclude_themes: ["ST", "*ST"]
+    focus_sectors: ["电子", "计算机", "医药生物", "电力设备", "汽车"]
+    min_heat_rank: 80
+    weights:
+      valuation: 0.15
+      quality: 0.22
+      potential: 0.28
+      technical: 0.15
+      flow: 0.10
+      risk: 0.10
+    core_candidate_min: 65
+    watchlist_min: 50
+
+  - name: "A股高股息"
+    market: "A"
+    style: "dividend"
+    description: "高股息+低波动+央企国企,防御配置"
+    coarse_strategy_id: "11"
+    min_market_cap: 100
+    exclude_themes: ["ST", "*ST"]
+    weights:
+      valuation: 0.18
+      quality: 0.30
+      potential: 0.07
+      technical: 0.10
+      flow: 0.10
+      risk: 0.25
+    core_candidate_min: 65
+    watchlist_min: 50
+
+  - name: "A股潜力"
+    market: "A"
+    style: "potential"
+    description: "盈利拐点+政策催化+主题共振,超额收益"
+    coarse_strategy_id: "8"
+    min_market_cap: 10
+    exclude_themes: ["ST", "*ST"]
+    require_rising: true
+    weights:
+      valuation: 0.12
+      quality: 0.16
+      potential: 0.32
+      technical: 0.18
+      flow: 0.12
+      risk: 0.10
+    core_candidate_min: 60
+    watchlist_min: 45
+
+  - name: "跨市场价值"
+    market: "ALL"
+    style: "value"
+    description: "A+H+US三市场价值标的, AH溢价套利"
+    min_market_cap: 50
+    weights:
+      valuation: 0.25
+      quality: 0.22
+      potential: 0.15
+      technical: 0.13
+      flow: 0.10
+      risk: 0.15
+    core_candidate_min: 65
+    watchlist_min: 50

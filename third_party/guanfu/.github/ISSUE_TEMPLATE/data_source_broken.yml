@@ -1,0 +1,37 @@
+name: Data source broken / returning placeholder
+description: One or more upstream feeds (Binance, mempool, SoSoValue, FRED, Futu, CoinMetrics, CoinGecko) is returning empty / stale / wrong data.
+labels: ["data-source"]
+body:
+  - type: dropdown
+    id: source
+    attributes:
+      label: Which data source
+      options:
+        - Binance (kline / funding / OI)
+        - mempool.space (hash rate / difficulty / mempool)
+        - SoSoValue (ETF flows)
+        - FRED (DXY / TIPS / M2 / SPX)
+        - Futu OpenD (US.QQQ / SPY / GLD / UUP / VIXY)
+        - Yahoo Finance (fallback for QQQ / SPY / GC=F)
+        - CoinMetrics (MVRV / NUPL)
+        - CoinGecko (market cap / dominance / stablecoin)
+        - alternative.me (Fear & Greed)
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: symptom
+    attributes:
+      label: Symptom
+      description: What field shows up wrong, what value, what was expected.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Repro command + output
+      placeholder: |
+        $ guanfu --domain flow --json | jq '.flow.etf_net_flow_30d_usd'
+        ...
+    validations:
+      required: true

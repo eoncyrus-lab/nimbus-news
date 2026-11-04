@@ -75,6 +75,9 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 )
 
-replace github.com/Ricaardo/nimbus-os/datasources => ../nimbus-os/datasources
+// 固定在 third_party/：上游 nimbus-os 已删除 news 仍在使用的 API
+// （market.Service、nasdaq.FetchCalendar 等），不能直接指向可变的 ../nimbus-os。
+// 来源：eoncyrus-lab/nimbus-os @ 652ecf8^（news 移出 monorepo 前的最后一个提交）。
+replace github.com/Ricaardo/nimbus-os/datasources => ./third_party/datasources
 
-replace github.com/Ricaardo/nimbus-os/guanfu => ../nimbus-os/guanfu
+replace github.com/Ricaardo/nimbus-os/guanfu => ./third_party/guanfu

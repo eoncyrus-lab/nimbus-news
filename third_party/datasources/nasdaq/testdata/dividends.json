@@ -1,0 +1,18 @@
+{
+  "data": {
+    "rows": [
+      {
+        "symbol": "BIG",
+        "companyName": "Big Dividend Corp.",
+        "amount": "$1,234.56",
+        "exOrEffDate": "07/30/2026"
+      },
+      {
+        "symbol": "NA",
+        "companyName": "No Amount Corp.",
+        "amount": "N/A",
+        "exOrEffDate": "2026-07-30"
+      }
+    ]
+  }
+}

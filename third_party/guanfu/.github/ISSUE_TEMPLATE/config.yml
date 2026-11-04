@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Skill / interpretation question
+    url: https://github.com/Ricaardo/guanfu/blob/main/skill/SKILL.md
+    about: How to read indicators / what a q-percentile means → start with SKILL.md
+  - name: Backtest / similarity methodology
+    url: https://github.com/Ricaardo/guanfu/blob/main/docs/backtest-methodology.md
+    about: How historical-similarity numbers are produced

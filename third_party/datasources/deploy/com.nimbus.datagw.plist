@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.nimbus.datagw — dataplane :8800 + datagw :8821（单进程双监听面，见 docs/ARCHITECTURE.md §1）。
+
+  ⚠️ 本文件是脱敏源（ARTIFACTS.md §3：plist 源必须在 os 内）。三个 API key 的真值只存在于
+  ~/Library/LaunchAgents/com.nimbus.datagw.plist（安装副本，ARCHITECTURE §5 约定的唯一持 key 处）。
+  安装/重装流程：cp 本文件到 LaunchAgents 后手工填回 key，再 bootout + bootstrap（勿 kickstart -k，读旧 env）。
+-->
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>DATAGW_PORT</key>
+		<string>8821</string>
+		<key>DATAPLANE_ADDR</key>
+		<string>127.0.0.1:8800</string>
+		<key>FINNHUB_API_KEY</key>
+		<string>REPLACE_ME</string>
+		<key>FMP_API_KEY</key>
+		<string>REPLACE_ME</string>
+		<key>FRED_API_KEY</key>
+		<string>REPLACE_ME</string>
+		<key>NEWS_DATA_DIR</key>
+		<string>/Users/x/nimbus-os/news/data</string>
+	</dict>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>Label</key>
+	<string>com.nimbus.datagw</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/x/nimbus-os/datasources/bin/datagw</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/Users/x/nimbus-os/datasources/logs/datagw.err.log</string>
+	<key>StandardOutPath</key>
+	<string>/Users/x/nimbus-os/datasources/logs/datagw.out.log</string>
+	<key>ThrottleInterval</key>
+	<integer>15</integer>
+</dict>
+</plist>

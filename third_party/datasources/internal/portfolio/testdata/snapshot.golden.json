@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "id": "portfolio:sha256:c8078b276bb696b9f9235dfcb55e9376c40d38f55ec7735f6e210797b1c81891",
+  "base_currency": "USD",
+  "as_of": "2026-07-23T04:05:06.123456789Z",
+  "holdings": [
+    {
+      "version": 1,
+      "symbol": "HK:00700",
+      "quantity": "3",
+      "unit_price": "400.25",
+      "currency": "HKD",
+      "market_value": "1200.75",
+      "base_value": "150.09375",
+      "as_of": "2026-07-23T04:05:06.123456789Z",
+      "provenance": [
+        "broker",
+        "fx"
+      ],
+      "stale": true
+    },
+    {
+      "version": 1,
+      "symbol": "US:MSFT",
+      "quantity": "0.1",
+      "unit_price": "0.2",
+      "currency": "USD",
+      "market_value": "0.02",
+      "base_value": "0.02",
+      "as_of": "2026-07-23T04:05:06.123456789Z",
+      "provenance": [
+        "prices"
+      ],
+      "stale": false
+    }
+  ],
+  "total_value": "150.11375",
+  "provenance": [
+    "broker",
+    "fx",
+    "prices"
+  ],
+  "stale": true
+}

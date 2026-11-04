@@ -1,0 +1,19 @@
+{
+  "data": {
+    "rows": [
+      {
+        "symbol": "aapl",
+        "name": "Apple Inc.",
+        "epsForecast": "$1.40",
+        "time": "time-after-hours"
+      },
+      {
+        "symbol": "NULLS",
+        "name": "Null Fields Corp.",
+        "epsForecast": null,
+        "time": "N/A"
+      }
+    ]
+  },
+  "status": {"rCode": 200}
+}

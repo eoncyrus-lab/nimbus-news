@@ -1,0 +1,39 @@
+name: Bug report
+description: Something is broken or returning wrong values.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran and what went wrong.
+      placeholder: |
+        $ guanfu --domain technical
+        ...output or error...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: guanfu version
+      description: Output of `guanfu --version` or commit SHA
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: OS / Go version
+      placeholder: macOS 15.4 / go1.26.2
+    validations:
+      required: true
+  - type: textarea
+    id: env-vars
+    attributes:
+      label: Environment variables in play
+      description: e.g. FRED_API_KEY set/unset, FUTU_ENABLED, GUANFU_NO_HISTORY. Don't paste actual keys.

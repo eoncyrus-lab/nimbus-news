@@ -1,0 +1,17 @@
+[project]
+name = "guanfu-datapipe"
+version = "0.1.0"
+description = "A/H/US market data collection pipeline for guanfu screener"
+requires-python = ">=3.10"
+dependencies = [
+    "duckdb>=1.1.0",
+    "pandas>=2.2.0",
+    "akshare>=1.16.0",
+    "requests",
+    "beautifulsoup4",
+    "lxml",
+]
+
+[project.optional-dependencies]
+futu = ["futu-api"]
+hkex = ["pypdf"]

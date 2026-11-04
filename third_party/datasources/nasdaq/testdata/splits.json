@@ -1,0 +1,18 @@
+{
+  "data": {
+    "rows": [
+      {
+        "symbol": "SPLT",
+        "companyName": "Split Corp.",
+        "ratio": "3 : 2",
+        "executionDate": "07/30/2026"
+      },
+      {
+        "symbol": "NONE",
+        "companyName": "No Ratio Corp.",
+        "ratio": null,
+        "executionDate": "2026-07-30"
+      }
+    ]
+  }
+}

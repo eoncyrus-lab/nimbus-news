@@ -1,0 +1,4 @@
+bin/
+*.out.log
+*.err.log
+.DS_Store

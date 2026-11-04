@@ -1,0 +1,88 @@
+name: refresh-and-deploy
+
+# Daily data refresh for the DCA web app. Runs guanfu's Go engine + the QDII
+# Python fetcher in CI (NOT on Vercel — Vercel only does `next build`), commits
+# the JSON snapshots, and the push triggers Vercel to redeploy the static site.
+on:
+  schedule:
+    - cron: "30 6 * * *" # 06:30 UTC daily — after US close, before Asia midday
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-and-deploy
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Warm the price store across runs so `refresh` stays incremental
+      # (cold first run does a one-off full fetch of the scoped sources).
+      - name: Restore price store cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.guanfu
+          key: guanfu-prices-${{ github.run_id }}
+          restore-keys: |
+            guanfu-prices-
+
+      - name: Install Python deps
+        run: pip install -r scripts/requirements.txt
+
+      # Scope to only what the site needs (qqq/spy/gold + Shiller CAPE) so we
+      # don't pull BTC full history / on-chain sources. Best-effort: individual
+      # source failures don't block the export, which reads whatever is present.
+      - name: Refresh price data
+        env:
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }} # optional; CAPE/Mayer don't need it
+        run: go run ./cmd/guanfu refresh --only=qqq,spy,gold,spx_cape || true
+
+      # A board: equity/gold DCA JSON. Fails loudly if data is unusable.
+      - name: Export web JSON (A board)
+        run: go run ./cmd/guanfu-web-export --out web/public/data
+
+      # B board: QDII funds. East Money may be geo-limited from US runners; on
+      # failure we keep the previously-committed snapshot rather than ship nulls.
+      - name: Fetch QDII (B board)
+        run: |
+          python scripts/fetch_qdii.py --out web/public/data/qdii.json \
+            || echo "::warning::QDII fetch failed (geo/rate-limit?); keeping previous snapshot"
+
+      # C board: lazy-portfolio backtests (Yahoo chart API) + 13F holdings (SEC
+      # EDGAR). Best-effort — keep the previous snapshot on failure.
+      - name: Backtest lazy portfolios (C-1)
+        run: |
+          python scripts/fetch_portfolios.py --out web/public/data/portfolios.json \
+            || echo "::warning::portfolio backtest failed; keeping previous snapshot"
+
+      - name: Fetch 13F holdings (C-2)
+        run: |
+          python scripts/fetch_13f.py --out web/public/data/holdings.json \
+            || echo "::warning::13F fetch failed; keeping previous snapshot"
+
+      - name: Commit refreshed snapshots
+        run: |
+          git config user.name "guanfu-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add web/public/data
+          if git diff --cached --quiet; then
+            echo "no data changes"
+          else
+            git commit -m "data: refresh web snapshots $(date -u +%F)"
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
+            git push
+          fi

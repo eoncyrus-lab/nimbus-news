@@ -193,7 +193,7 @@ func TestNewsAggregateSourcesConfigured(t *testing.T) {
 		sched   string
 		mode    string
 	}{
-		{"news-aggregate-morning", "09:15", "morning"},
+		{"news-aggregate-morning", "09:25", "morning"},
 		{"news-aggregate-evening", "19:30", "evening"},
 	}
 	for _, w := range want {

@@ -1,0 +1,23 @@
+name: Feature request
+description: Propose a new indicator, domain, data source, or output format.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Why this matters
+      description: Decision use-case + which existing pattern this would strengthen.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What to add, where it fits in the 8 domains, and (if a new indicator) what data source.
+    validations:
+      required: true
+  - type: textarea
+    id: rejection
+    attributes:
+      label: When it would be wrong / fail
+      description: If you can't think of a failure case, the indicator probably isn't sharp enough yet.

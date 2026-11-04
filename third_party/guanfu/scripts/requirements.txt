@@ -1,0 +1,8 @@
+# Python deps for the refresh pipeline (GitHub Action).
+# fetch_qdii.py          -> akshare, pandas
+# fetch_portfolios.py    -> pandas (Yahoo chart API via stdlib urllib)
+# fetch_13f.py           -> stdlib only (urllib + xml)
+# import_cape.py         -> pandas, openpyxl (Shiller CAPE XLS -> JSON)
+akshare>=1.16
+pandas>=2.0
+openpyxl>=3.1

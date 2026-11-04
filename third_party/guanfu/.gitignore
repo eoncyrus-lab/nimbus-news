@@ -1,0 +1,48 @@
+# Binaries
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of go coverage
+*.out
+
+# Dependency directories
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Cache (runtime data directory)
+/cache/
+/.tmp/
+
+# Daily panel snapshots and reports (runtime output, per-user)
+/data/
+
+# History database (local)
+*.db
+
+# Environment
+.env
+.env.local
+
+# Root-level local binaries / agent state
+/guanfu
+/guanfu-mcp
+/guanfu-web-export
+.serena/
+.agents/state/

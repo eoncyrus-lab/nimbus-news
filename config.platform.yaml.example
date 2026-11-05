@@ -58,12 +58,10 @@ sources:
     interval: 120
     sinks: ["wechat-main", "discord-webhook"]
     routing:
-      # 无 AI 模式：不做评分，是否即时推送只由每日配额决定；配额用尽后回落 digest。
+      # 无 AI 模式：不做评分，也不设每日配额；每条新消息即时推送。
       ai_policy: bypass
       on_ai_failure: silent
-      # 2026-11-04 降噪：direct 8→2，避免快讯源一天几十条即时推送。
-      direct: {max_per_day: 2, priority: 70}
-      digest: {max_per_day: 2, priority: 30, briefing_target: news_aggregate}
+      direct: {max_per_day: 0, priority: 70}
       default: direct
     options:
       max_age_hours: 2
@@ -77,11 +75,10 @@ sources:
     interval: 300  # 分析型，不需要高频
     sinks: ["wechat-main", "discord-webhook"]
     routing:
-      # 无 AI 模式：不做评分，是否即时推送只由每日配额决定；配额用尽后回落 digest。
+      # 无 AI 模式：不做评分，也不设每日配额；每条新消息即时推送。
       ai_policy: bypass
       on_ai_failure: silent
-      direct: {max_per_day: 1, priority: 60}
-      digest: {max_per_day: 2, priority: 40, briefing_target: news_aggregate}
+      direct: {max_per_day: 0, priority: 60}
       default: direct
     options:
       max_age_hours: 12
@@ -95,12 +92,10 @@ sources:
     interval: 180
     sinks: ["wechat-main", "discord-webhook"]
     routing:
-      # 无 AI 模式：不做评分，是否即时推送只由每日配额决定；配额用尽后回落 digest。
+      # 无 AI 模式：不做评分，也不设每日配额；每条新消息即时推送。
       ai_policy: bypass
       on_ai_failure: silent
-      # 2026-11-04 降噪：direct 12→3，digest 8→5。
-      direct: {max_per_day: 3, priority: 75}
-      digest: {max_per_day: 5, priority: 45, briefing_target: news_aggregate}
+      direct: {max_per_day: 0, priority: 75}
       default: direct
     options:
       max_age_hours: 2
@@ -219,12 +214,10 @@ sources:
     interval: 300
     sinks: ["wechat-main", "discord-webhook"]
     routing:
-      # 无 AI 模式：不做评分，是否即时推送只由每日配额决定；配额用尽后回落 digest。
+      # 无 AI 模式：不做评分，也不设每日配额；每条新消息即时推送。
       ai_policy: bypass
       on_ai_failure: silent
-      # 2026-11-04 降噪：direct 3→2。
-      direct: {max_per_day: 2, priority: 60}
-      digest: {max_per_day: 2, priority: 40, briefing_target: news_aggregate}
+      direct: {max_per_day: 0, priority: 60}
       default: direct
     options:
       max_age_hours: 4
@@ -243,11 +236,10 @@ sources:
     interval: 120  # 突发快讯，越快越好
     sinks: ["wechat-main", "discord-webhook"]
     routing:
-      # 无 AI 模式：不做评分，是否即时推送只由每日配额决定；配额用尽后回落 digest。
+      # 无 AI 模式：不做评分，也不设每日配额；每条新消息即时推送。
       ai_policy: bypass
       on_ai_failure: silent
-      direct: {max_per_day: 2, priority: 70}
-      digest: {max_per_day: 2, priority: 30, briefing_target: news_aggregate}
+      direct: {max_per_day: 0, priority: 70}
       default: direct
     options:
       max_age_hours: 1

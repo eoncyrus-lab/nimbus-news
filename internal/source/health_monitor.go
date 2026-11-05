@@ -100,9 +100,6 @@ func (m *HealthMonitor) RecordSuccess(name string, latency time.Duration, fetchC
 		return
 	}
 
-	wasUnhealthy := h.Status == StatusUnhealthy || h.Status == StatusDegraded
-	prevStatus := h.Status
-
 	h.LastSuccess = time.Now()
 	h.ConsecutiveFails = 0
 	h.TotalRequests++
@@ -125,12 +122,7 @@ func (m *HealthMonitor) RecordSuccess(name string, latency time.Duration, fetchC
 	h.Status = StatusHealthy
 	h.UnhealthySince = time.Time{}
 	h.LastNotifiedAt = time.Time{}
-
-	// 发送恢复通知
-	if wasUnhealthy && m.notifier != nil {
-		go m.notifier.NotifyRecovered(name, m.copyHealth(h))
-		slog.Info("[HealthMonitor] Source", "name", name, "prevstatus", prevStatus)
-	}
+	// 不发恢复通知：源频繁抖动时"恢复"消息没有操作价值，只保留降级/故障告警。
 }
 
 // RecordFailure 记录失败

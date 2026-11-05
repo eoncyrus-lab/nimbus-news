@@ -2,12 +2,14 @@ package source
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/xml"
 	"fmt"
 	"html"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -29,6 +31,28 @@ func init() {
 
 const defaultRSSMaxResponseBytes int64 = 4 << 20
 
+// send_images 的取图参数。只取每条消息的首图：WeChat 每张图都是一条独立消息，
+// 一次推多张会刷屏。
+const (
+	imageFetchWorkers    = 5
+	imageFetchTimeout    = 6 * time.Second
+	imagePageMaxBytes    = 1 << 20
+	imageCacheTTL        = 6 * time.Hour
+	imageCacheMaxEntries = 2000
+)
+
+type imageCacheEntry struct {
+	url     string
+	expires time.Time
+}
+
+var (
+	telegramPostIDPattern    = regexp.MustCompile(`^\d+$`)
+	telegramPostBlockPattern = regexp.MustCompile(`data-post="([^"/]+)/(\d+)"`)
+	telegramPhotoPattern     = regexp.MustCompile(`tgme_widget_message_photo_wrap[^>]*background-image:url\(['"]?([^'")]+)`)
+	telegramVideoPattern     = regexp.MustCompile(`tgme_widget_message_video_thumb[^>]*background-image:url\(['"]?([^'")]+)`)
+)
+
 // RSSSource RSS 数据源
 type RSSSource struct {
 	name                string
@@ -39,6 +63,7 @@ type RSSSource struct {
 	excludeLinkPatterns []string
 	excludeVideoOnly    bool
 	excludeReposts      bool
+	sendImages          bool // 从链接页取首图随消息推送
 	fetchLinkedBody     bool
 	linkedBodyAppend    bool // append linked body instead of replacing content
 	linkedBodyHosts     map[string]struct{}
@@ -51,10 +76,15 @@ type RSSSource struct {
 
 	// 条件请求(ETag/Last-Modified):上游未变化时 304 免下载。
 	// 高频轮询源(300s×288轮/天)绝大多数轮次内容不变,可省 ~97% 流量与解析。
-	condMu        sync.Mutex
-	etag          string
-	lastModified  string
+	condMu           sync.Mutex
+	etag             string
+	lastModified     string
 	notModifiedSkips int64 // 可观测:304 跳过次数
+
+	// 链接页取图结果缓存：同一批条目会在 max_age 窗口内被反复抓到，
+	// 缓存空结果同样有意义（纯文字帖不再重复请求页面）。
+	imageMu    sync.Mutex
+	imageCache map[string]imageCacheEntry
 }
 
 // NewRSSSource 创建 RSS 源
@@ -67,6 +97,7 @@ func NewRSSSource(cfg Config) (Source, error) {
 		maxResponseBytes:   defaultRSSMaxResponseBytes,
 		linkedBodyHosts:    make(map[string]struct{}),
 		linkedBodyMaxChars: 12000,
+		imageCache:         make(map[string]imageCacheEntry),
 	}
 
 	// 解析 allowed_sources 配置
@@ -103,6 +134,7 @@ func NewRSSSource(cfg Config) (Source, error) {
 
 	source.excludeVideoOnly = optionBool(cfg.Options, "exclude_video_only")
 	source.excludeReposts = optionBool(cfg.Options, "exclude_reposts")
+	source.sendImages = optionBool(cfg.Options, "send_images")
 	source.fetchLinkedBody = optionBool(cfg.Options, "fetch_linked_body")
 	source.linkedBodyAppend = optionBool(cfg.Options, "linked_body_append")
 	source.excludeLinkPatterns = optionStrings(cfg.Options, "exclude_link_patterns")
@@ -507,7 +539,11 @@ func (r *RSSSource) Fetch() ([]*model.Message, error) {
 
 		if r.fetchLinkedBody {
 			if linkedBody, err := r.fetchLinkedArticleBody(link); err == nil && linkedBody != "" {
-				if r.linkedBodyAppend && cleanContent != "" { cleanContent = cleanContent + "\n\n── AI 分析 ──\n" + linkedBody } else { cleanContent = linkedBody }
+				if r.linkedBodyAppend && cleanContent != "" {
+					cleanContent = cleanContent + "\n\n── AI 分析 ──\n" + linkedBody
+				} else {
+					cleanContent = linkedBody
+				}
 			} else if err != nil {
 				slog.Debug("rss linked body fallback", "source", r.name, "link", link, "error", err)
 			}
@@ -542,7 +578,7 @@ func (r *RSSSource) Fetch() ([]*model.Message, error) {
 			FetchTime:  time.Now(),
 			Source:     r.name,
 			SourceType: "rss",
-				Tags:       r.tags,
+			Tags:       r.tags,
 		}
 
 		// 确定来源显示名称（优先使用 RSS source 字段）
@@ -559,7 +595,17 @@ func (r *RSSSource) Fetch() ([]*model.Message, error) {
 		acceptedCount++
 	}
 
-	slog.Info("rss fetched", "source", r.name, "len_messages", len(messages))
+	images := 0
+	if r.sendImages && len(messages) > 0 {
+		r.resolveImages(messages)
+		for _, msg := range messages {
+			if msg.ImageURL != "" {
+				images++
+			}
+		}
+	}
+
+	slog.Info("rss fetched", "source", r.name, "len_messages", len(messages), "images", images)
 	return messages, nil
 }
 
@@ -966,4 +1012,263 @@ func parseRSSTime(dateStr string) (time.Time, error) {
 func hashString(s string) string {
 	h := sha256.Sum256([]byte(s))
 	return fmt.Sprintf("%x", h[:8]) // 使用前8字节作为ID
+}
+
+// resolveImages 为 send_images 源补齐首图。
+//
+// Telegram 频道的单帖页面是"在 App 中打开"的极简页：只有 og:image，纯文字帖拿到的
+// 也是频道头像，页面里没有任何媒体块。媒体信息只存在于 t.me/s/<channel> 预览页的
+// 帖子块中，所以按频道抓一次预览页，再按 post id 匹配；非 Telegram 链接才逐条取
+// og:image。
+func (r *RSSSource) resolveImages(messages []*model.Message) {
+	// 只推首图：feed 自身带多张图时同样截断。
+	for _, msg := range messages {
+		if len(msg.ImageURLs) > 1 {
+			msg.ImageURLs = msg.ImageURLs[:1]
+		}
+		if msg.ImageURL == "" && len(msg.ImageURLs) > 0 {
+			msg.ImageURL = msg.ImageURLs[0]
+		}
+	}
+
+	byChannel := make(map[string][]*model.Message)
+	var pending []*model.Message
+	for _, msg := range messages {
+		if msg.ImageURL != "" || msg.Link == "" {
+			continue
+		}
+		if channel, _, ok := parseTelegramPostLink(msg.Link); ok {
+			byChannel[channel] = append(byChannel[channel], msg)
+			continue
+		}
+		if cached, ok := r.cachedImage(msg.Link); ok {
+			applyResolvedImage(msg, cached)
+			continue
+		}
+		pending = append(pending, msg)
+	}
+
+	var wg sync.WaitGroup
+	for channel, msgs := range byChannel {
+		wg.Add(1)
+		go func(channel string, msgs []*model.Message) {
+			defer wg.Done()
+			images := r.fetchTelegramChannelImages(channel)
+			for _, msg := range msgs {
+				if _, id, ok := parseTelegramPostLink(msg.Link); ok {
+					applyResolvedImage(msg, images[channel+"/"+id])
+				}
+			}
+		}(channel, msgs)
+	}
+
+	sem := make(chan struct{}, imageFetchWorkers)
+	for _, msg := range pending {
+		wg.Add(1)
+		go func(msg *model.Message) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			image := r.fetchLinkImage(msg.Link)
+			r.storeImage(msg.Link, image)
+			applyResolvedImage(msg, image)
+		}(msg)
+	}
+	wg.Wait()
+}
+
+func applyResolvedImage(msg *model.Message, imageURL string) {
+	if imageURL == "" {
+		return
+	}
+	msg.ImageURL = imageURL
+	msg.ImageURLs = []string{imageURL}
+}
+
+// parseTelegramPostLink 解析 https://t.me/<channel>/<id>，返回小写频道名与帖子 id。
+func parseTelegramPostLink(link string) (channel, postID string, ok bool) {
+	parsed, err := url.Parse(link)
+	if err != nil {
+		return "", "", false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if host != "t.me" && host != "www.t.me" && host != "telegram.me" && host != "www.telegram.me" {
+		return "", "", false
+	}
+	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if len(parts) < 2 || !telegramPostIDPattern.MatchString(parts[1]) {
+		return "", "", false
+	}
+	return strings.ToLower(parts[0]), parts[1], true
+}
+
+// parseTelegramPreviewImages 从 t.me/s/<channel> 页面提取每个帖子的媒体图。
+// 纯文字帖没有 photo/video 块，不会出现在结果里。
+func parseTelegramPreviewImages(page string) map[string]string {
+	matches := telegramPostBlockPattern.FindAllStringSubmatchIndex(page, -1)
+	images := make(map[string]string, len(matches))
+	for i, match := range matches {
+		channel := strings.ToLower(page[match[2]:match[3]])
+		key := channel + "/" + page[match[4]:match[5]]
+		end := len(page)
+		if i+1 < len(matches) {
+			end = matches[i+1][0]
+		}
+		block := page[match[1]:end]
+		if photo := telegramPhotoPattern.FindStringSubmatch(block); len(photo) == 2 {
+			images[key] = html.UnescapeString(photo[1])
+			continue
+		}
+		if video := telegramVideoPattern.FindStringSubmatch(block); len(video) == 2 {
+			images[key] = html.UnescapeString(video[1])
+		}
+	}
+	return images
+}
+
+func (r *RSSSource) fetchTelegramChannelImages(channel string) map[string]string {
+	page, err := r.fetchPageBody("https://t.me/s/" + url.PathEscape(channel))
+	if err != nil {
+		slog.Debug("rss telegram preview fetch failed", "source", r.name, "channel", channel, "error", err)
+		return nil
+	}
+	return parseTelegramPreviewImages(page)
+}
+
+func (r *RSSSource) fetchLinkImage(link string) string {
+	page, err := r.fetchPageBody(link)
+	if err != nil {
+		return ""
+	}
+	image := extractOGImage(page)
+	if !validImageURL(image) {
+		return ""
+	}
+	return image
+}
+
+func (r *RSSSource) fetchPageBody(rawURL string) (string, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "", err
+	}
+	if parsed.Scheme != "https" || isPrivateImageHost(parsed.Hostname()) {
+		return "", fmt.Errorf("image page URL is not allowed")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), imageFetchTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+
+	client := &http.Client{Timeout: imageFetchTimeout}
+	if r.httpClient != nil {
+		client.Transport = r.httpClient.Transport
+		client.Jar = r.httpClient.Jar
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return "", fmt.Errorf("image page returned HTTP %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, imagePageMaxBytes))
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
+}
+
+// extractOGImage 取页面第一个 og:image / twitter:image。
+func extractOGImage(page string) string {
+	tokenizer := xhtml.NewTokenizer(strings.NewReader(page))
+	for {
+		switch tokenizer.Next() {
+		case xhtml.ErrorToken:
+			return ""
+		case xhtml.StartTagToken, xhtml.SelfClosingTagToken:
+			name, hasAttr := tokenizer.TagName()
+			if string(name) != "meta" || !hasAttr {
+				continue
+			}
+			var property, content string
+			for {
+				key, value, more := tokenizer.TagAttr()
+				switch strings.ToLower(string(key)) {
+				case "property", "name":
+					property = strings.ToLower(string(value))
+				case "content":
+					content = string(value)
+				}
+				if !more {
+					break
+				}
+			}
+			if content != "" && (property == "og:image" || property == "twitter:image") {
+				return content
+			}
+		}
+	}
+}
+
+// validImageURL 仅接受 HTTPS 且非私网/保留地址：WeChat 只支持 HTTPS，同时避免
+// feed 内容把服务端引向内网。
+func validImageURL(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" {
+		return false
+	}
+	return !isPrivateImageHost(parsed.Hostname())
+}
+
+func isPrivateImageHost(host string) bool {
+	host = strings.Trim(host, "[]")
+	lower := strings.ToLower(host)
+	if lower == "" || lower == "localhost" || strings.HasSuffix(lower, ".local") {
+		return true
+	}
+	ip := net.ParseIP(lower)
+	if ip == nil {
+		return false
+	}
+	return ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()
+}
+
+func (r *RSSSource) cachedImage(link string) (string, bool) {
+	r.imageMu.Lock()
+	defer r.imageMu.Unlock()
+	entry, ok := r.imageCache[link]
+	if !ok {
+		return "", false
+	}
+	if time.Now().After(entry.expires) {
+		delete(r.imageCache, link)
+		return "", false
+	}
+	return entry.url, true
+}
+
+func (r *RSSSource) storeImage(link, imageURL string) {
+	r.imageMu.Lock()
+	defer r.imageMu.Unlock()
+	if r.imageCache == nil {
+		r.imageCache = make(map[string]imageCacheEntry)
+	}
+	if len(r.imageCache) >= imageCacheMaxEntries {
+		now := time.Now()
+		for key, entry := range r.imageCache {
+			if now.After(entry.expires) {
+				delete(r.imageCache, key)
+			}
+		}
+		if len(r.imageCache) >= imageCacheMaxEntries {
+			r.imageCache = make(map[string]imageCacheEntry)
+		}
+	}
+	r.imageCache[link] = imageCacheEntry{url: imageURL, expires: time.Now().Add(imageCacheTTL)}
 }

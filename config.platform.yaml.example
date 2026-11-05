@@ -65,6 +65,7 @@ sources:
       default: direct
     options:
       max_age_hours: 2
+      send_images: true
       tags: ["机构", "对冲基金", "TradFi"]
 
   # Kobeissi Letter —— 数据驱动宏观分析，与 bwe-tradfi 互补（bwe=突发标题, Kobeissi=量化背景）
@@ -82,6 +83,7 @@ sources:
       default: direct
     options:
       max_age_hours: 12
+      send_images: true
       tags: ["宏观", "市场", "分析"]
 
   # Walter Bloomberg —— 高频市场快讯（Telegram 公共频道的 RSS 转换源）。
@@ -99,6 +101,7 @@ sources:
       default: direct
     options:
       max_age_hours: 2
+      send_images: true
       tags: ["宏观", "市场", "快讯"]
 
   # first-squawk 已移除（2026-11-04）：与 walter-bloomberg 同属一条快讯线，实测头部条目

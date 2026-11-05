@@ -427,12 +427,12 @@ market:
 # ── LLM ──────────────────────────────────────────────────────────────────────
 
 llm:
-  provider: "deepseek"
-  api_url: "https://api.deepseek.com"
-  api_key: "${DEEPSEEK_API_KEY}"
-  model: "deepseek-v4-flash"      # 日常: Chat / 翻译+简评(Enhance) / AI Filter
-  heavy_model: "deepseek-v4-pro"  # 深度推理: 观复读盘 / 投资人 agent
-  thinking_mode: "thinking"
+  provider: "zhipu"
+  api_url: "https://open.bigmodel.cn/api/paas/v4"
+  api_key: "${GLM_API_KEY}"
+  model: "glm-4-flash"            # 翻译 + 简评；免费
+  heavy_model: "glm-4-flash"      # 报告解读也用同一模型，避免请求不存在的 deepseek 模型
+  thinking_mode: "disabled"
   enhance:
     enabled: true
     max_per_hour: 20
@@ -514,9 +514,8 @@ source_health:
   unhealthy_threshold: 5
   recovery_interval: 300
   renotify_interval: 21600   # 持续 unhealthy 期间每 6h 重复告警
-  # 源健康告警渠道。主推企业微信(实测可达,主人天天看)。
-  notify_channels:
-    - "wechat-main"
+  # 健康状态只写入日志与 /metrics，不推送任何消息。
+  notify_channels: []
 
 # ── Alert ─────────────────────────────────────────────────────────────────────
 

@@ -35,7 +35,7 @@ const defaultRSSMaxResponseBytes int64 = 4 << 20
 // 一次推多张会刷屏。
 const (
 	imageFetchWorkers    = 5
-	imageFetchTimeout    = 6 * time.Second
+	imageFetchTimeout    = 15 * time.Second
 	imagePageMaxBytes    = 1 << 20
 	imageCacheTTL        = 6 * time.Hour
 	imageCacheMaxEntries = 2000
@@ -398,7 +398,13 @@ func (r *RSSSource) Fetch() ([]*model.Message, error) {
 
 	client := r.httpClient
 	if client == nil {
-		client = &http.Client{Timeout: 15 * time.Second}
+		// 本机走 Surge 代理时，慢节点下单次请求常要 10s+，Go 默认 10s
+		// TLSHandshakeTimeout 会把正常请求误判成失败（日志里成片的
+		// "TLS handshake timeout"）。放宽握手/首包超时，仍保留 30s 总上限。
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.TLSHandshakeTimeout = 20 * time.Second
+		transport.ResponseHeaderTimeout = 25 * time.Second
+		client = &http.Client{Timeout: 30 * time.Second, Transport: transport}
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -1168,6 +1174,11 @@ func (r *RSSSource) fetchPageBody(rawURL string) (string, error) {
 	if r.httpClient != nil {
 		client.Transport = r.httpClient.Transport
 		client.Jar = r.httpClient.Jar
+	} else {
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.TLSHandshakeTimeout = imageFetchTimeout
+		transport.ResponseHeaderTimeout = imageFetchTimeout
+		client.Transport = transport
 	}
 	resp, err := client.Do(req)
 	if err != nil {

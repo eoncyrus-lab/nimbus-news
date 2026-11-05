@@ -67,7 +67,7 @@ func NewDiscordChannel(cfg channel.Config) (channel.Channel, error) {
 	ch := &DiscordChannel{
 		BaseChannel:       channel.NewBaseChannel(cfg.Name, "discord", mode),
 		webhookURL:        cfg.Webhook,
-		httpClient:        &http.Client{Timeout: 30 * time.Second},
+		httpClient:        newHTTPClient(30 * time.Second),
 		threadPoolEnabled: true,
 		threadTTL:         24 * time.Hour,
 		threadMappings:    make(map[string][]string),
@@ -861,4 +861,13 @@ func (d *DiscordChannel) GetDedupStats() map[string]interface{} {
 		"window":    "60 minutes",
 		"threshold": 0.7,
 	}
+}
+
+// newHTTPClient 放宽 TLS 握手超时。本机经 Surge 代理时慢节点握手常需 10s+，
+// Go 默认 10s 会把正常推送判成 "TLS handshake timeout" 而丢消息。
+func newHTTPClient(timeout time.Duration) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSHandshakeTimeout = 20 * time.Second
+	transport.ResponseHeaderTimeout = 25 * time.Second
+	return &http.Client{Timeout: timeout, Transport: transport}
 }

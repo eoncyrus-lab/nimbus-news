@@ -179,7 +179,8 @@ func (e *NewsEngine) deliverDirectClaim(ctx context.Context, routedStore digest.
 		}
 		// 每个渠道独立计时：WeChat 带图消息要先下载图片，慢网络下会占满共享
 		// 超时，导致排在后面的 Discord 等渠道被 context deadline 误杀。
-		dispatchCtx, cancelDispatch := context.WithTimeout(ctx, 20*time.Second)
+		// 30s 覆盖“文本 + 首图下载”两次慢请求，保证消息能送达。
+		dispatchCtx, cancelDispatch := context.WithTimeout(ctx, 30*time.Second)
 		err := e.router.DispatchNews(dispatchCtx, claim.Message, []string{channel})
 		cancelDispatch()
 		if err != nil {

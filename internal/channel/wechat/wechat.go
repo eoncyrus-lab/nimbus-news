@@ -42,7 +42,7 @@ func NewWechatChannel(cfg channel.Config) (channel.Channel, error) {
 	return &WechatChannel{
 		BaseChannel: channel.NewBaseChannel(cfg.Name, "wechat", mode),
 		webhook:     cfg.Webhook,
-		httpClient:  &http.Client{Timeout: 30 * time.Second},
+		httpClient:  newHTTPClient(30 * time.Second),
 	}, nil
 }
 
@@ -301,4 +301,13 @@ func (w *WechatChannel) sendRequest(ctx context.Context, payload interface{}) er
 		return fmt.Errorf("wechat response status: %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// newHTTPClient 放宽 TLS 握手超时。本机经 Surge 代理时慢节点握手常需 10s+，
+// Go 默认 10s 会把正常推送判成 "TLS handshake timeout" 而丢消息。
+func newHTTPClient(timeout time.Duration) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSHandshakeTimeout = 20 * time.Second
+	transport.ResponseHeaderTimeout = 25 * time.Second
+	return &http.Client{Timeout: timeout, Transport: transport}
 }

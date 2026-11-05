@@ -129,9 +129,10 @@ sources:
     interval: 900
     sinks: ["wechat-main", "discord-webhook"]
     routing:
-      ai_policy: required
-      on_ai_failure: digest
-      digest: {min_score: 8, max_per_day: 2, priority: 40, briefing_target: news_aggregate}
+      # AI 只做翻译，不参与路由：全部进聚合，受 digest 配额约束。
+      ai_policy: bypass
+      on_ai_failure: silent
+      digest: {max_per_day: 2, priority: 40, briefing_target: news_aggregate}
       default: digest
     options:
       max_age_hours: 12
@@ -172,9 +173,10 @@ sources:
     interval: 300
     sinks: ["wechat-main", "discord-webhook"]
     routing:
-      ai_policy: required
-      on_ai_failure: digest
-      digest: {min_score: 8.5, max_per_day: 3, priority: 50, briefing_target: news_aggregate}
+      # AI 只做翻译，不参与路由：全部进聚合，受 digest 配额约束。
+      ai_policy: bypass
+      on_ai_failure: silent
+      digest: {max_per_day: 3, priority: 50, briefing_target: news_aggregate}
       default: digest
     options:
       max_age_hours: 4
@@ -192,9 +194,10 @@ sources:
     interval: 300
     sinks: ["wechat-main", "discord-webhook"]
     routing:
-      ai_policy: required
-      on_ai_failure: digest
-      digest: {min_score: 8.5, max_per_day: 2, priority: 50, briefing_target: news_aggregate}
+      # AI 只做翻译，不参与路由：全部进聚合，受 digest 配额约束。
+      ai_policy: bypass
+      on_ai_failure: silent
+      digest: {max_per_day: 2, priority: 50, briefing_target: news_aggregate}
       default: digest
     options:
       max_age_hours: 4
@@ -253,9 +256,10 @@ sources:
     interval: 600
     sinks: ["wechat-main", "discord-webhook"]
     routing:
-      ai_policy: required
-      on_ai_failure: digest
-      digest: {min_score: 7.5, max_per_day: 2, priority: 30, briefing_target: news_aggregate}
+      # AI 只做翻译，不参与路由：全部进聚合，受 digest 配额约束。
+      ai_policy: bypass
+      on_ai_failure: silent
+      digest: {max_per_day: 2, priority: 30, briefing_target: news_aggregate}
       default: digest
     options:
       max_age_hours: 12

@@ -232,11 +232,11 @@ func TestProductionTypedRoutingUsesNarrowCriticalPolicies(t *testing.T) {
 		false, AIPolicyBypass, RouteDefaultSilent, RouteDefaultDirect,
 		&routeBandExpectation{maxPerDay: 0, priority: 70}, nil)
 	assertSourcePolicy(t, sources, "bloomberg-markets", 300, nil, nil,
-		false, AIPolicyRequired, RouteDefaultDigest, RouteDefaultDigest, nil,
-		&routeBandExpectation{minScore: float64Ptr(8.5), maxPerDay: 3, priority: 50, briefingTarget: "news_aggregate"})
+		false, AIPolicyBypass, RouteDefaultSilent, RouteDefaultDigest, nil,
+		&routeBandExpectation{maxPerDay: 3, priority: 50, briefingTarget: "news_aggregate"})
 	assertSourcePolicy(t, sources, "bloomberg-economics", 300, nil, nil,
-		false, AIPolicyRequired, RouteDefaultDigest, RouteDefaultDigest, nil,
-		&routeBandExpectation{minScore: float64Ptr(8.5), maxPerDay: 2, priority: 50, briefingTarget: "news_aggregate"})
+		false, AIPolicyBypass, RouteDefaultSilent, RouteDefaultDigest, nil,
+		&routeBandExpectation{maxPerDay: 2, priority: 50, briefingTarget: "news_aggregate"})
 	assertSourcePolicy(t, sources, "bloomberg-politics", 300, nil, nil,
 		false, AIPolicyBypass, RouteDefaultSilent, RouteDefaultDirect,
 		&routeBandExpectation{maxPerDay: 0, priority: 60}, nil)

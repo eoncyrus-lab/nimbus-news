@@ -167,8 +167,6 @@ func (e *NewsEngine) deliverDirectClaim(ctx context.Context, routedStore digest.
 		_ = routedStore.ReleaseDirect(ctx, claim.Source, claim.MessageID, claim.Token)
 		return false
 	}
-	dispatchCtx, cancelDispatch := context.WithTimeout(ctx, 20*time.Second)
-	defer cancelDispatch()
 	ok := true
 	for _, channel := range claim.Channels {
 		if manager := e.router.GetChannelManager(); manager == nil || !manager.Has(channel) {
@@ -179,7 +177,12 @@ func (e *NewsEngine) deliverDirectClaim(ctx context.Context, routedStore digest.
 			ok = false
 			continue
 		}
-		if err := e.router.DispatchNews(dispatchCtx, claim.Message, []string{channel}); err != nil {
+		// 每个渠道独立计时：WeChat 带图消息要先下载图片，慢网络下会占满共享
+		// 超时，导致排在后面的 Discord 等渠道被 context deadline 误杀。
+		dispatchCtx, cancelDispatch := context.WithTimeout(ctx, 20*time.Second)
+		err := e.router.DispatchNews(dispatchCtx, claim.Message, []string{channel})
+		cancelDispatch()
+		if err != nil {
 			slog.Error("typed direct dispatch error", "source", claim.Source, "channel", channel, "error", err)
 			checkpointCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			_ = routedStore.FailDirectChannel(checkpointCtx, claim.Source, claim.MessageID, claim.Token, channel, err.Error(), false)
@@ -191,7 +194,7 @@ func (e *NewsEngine) deliverDirectClaim(ctx context.Context, routedStore digest.
 		// process crash in this window may resend the channel on recovery; direct
 		// delivery therefore remains intentionally at-least-once.
 		checkpointCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		err := routedStore.CompleteDirectChannel(checkpointCtx, claim.Source, claim.MessageID, claim.Token, channel)
+		err = routedStore.CompleteDirectChannel(checkpointCtx, claim.Source, claim.MessageID, claim.Token, channel)
 		cancel()
 		if err != nil {
 			slog.Error("complete direct channel failed", "source", claim.Source, "channel", channel, "error", err)

@@ -776,3 +776,37 @@ func readRawDigestItems(t *testing.T, db *bolt.DB) map[string]digest.Item {
 	}
 	return out
 }
+
+func TestRoutedCriticalDailyCap(t *testing.T) {
+	owner := newDigestTestOwner(t, "critical-cap.db")
+	now := time.Date(2026, 8, 1, 15, 59, 0, 0, time.UTC)
+	ds, err := NewDigestStore(owner.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ds.now = func() time.Time { return now }
+	request := digest.RouteRequest{
+		Source: "source", MessageID: "c1", Lane: digest.RouteDirect,
+		Critical: true, CriticalMaxPerDay: 2,
+	}
+	first, err := ds.AdmitDirect(context.Background(), request)
+	if err != nil || !first.Admitted || first.Used != 1 || first.Limit != 2 {
+		t.Fatalf("first=%+v err=%v", first, err)
+	}
+	request.MessageID = "c2"
+	second, err := ds.AdmitDirect(context.Background(), request)
+	if err != nil || !second.Admitted || second.Used != 2 {
+		t.Fatalf("second=%+v err=%v", second, err)
+	}
+	request.MessageID = "c3"
+	capped, err := ds.AdmitDirect(context.Background(), request)
+	if err != nil || capped.Admitted || capped.Used != 2 || capped.Limit != 2 {
+		t.Fatalf("capped=%+v err=%v", capped, err)
+	}
+	now = now.Add(24 * time.Hour)
+	request.MessageID = "c4"
+	nextDay, err := ds.AdmitDirect(context.Background(), request)
+	if err != nil || !nextDay.Admitted || nextDay.Used != 1 {
+		t.Fatalf("nextDay=%+v err=%v", nextDay, err)
+	}
+}

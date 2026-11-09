@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Ricaardo/nimbus-os/news/internal/model"
 )
 
 func jin10FlashItem(id string, important int, when time.Time, content string) jin10Flash {
@@ -178,5 +180,96 @@ func TestJin10FetchRecordsExcludedAnnouncements(t *testing.T) {
 	}
 	if count := src.(*Jin10Source).noiseCount(); count != 1 {
 		t.Fatalf("dropped announcement should be recorded for daily summary, got %d", count)
+	}
+}
+
+func TestJin10FetchSplitsRoundupsAndDedupes(t *testing.T) {
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().In(loc)
+	roundup := `<span class="section-news">1. 美联储戴利：如有需要准备进一步加息。</span><br/>` +
+		`<span class="section-news">2. 特朗普称将在离任前签发大量赦免令。</span>`
+	page := jin10Response{Status: 200, Data: []jin10Flash{
+		jin10FlashItem("roundup", 1, now.Add(-1*time.Minute), roundup),
+		jin10FlashItem("nvda-1", 1, now.Add(-2*time.Minute), "英伟达(NVDA.O)美股盘前跌逾4%。"),
+		jin10FlashItem("nvda-2", 1, now.Add(-3*time.Minute), "英伟达(NVDA.O)美股盘前跌逾4%。"),
+	}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("max_time") != "" {
+			_ = json.NewEncoder(w).Encode(jin10Response{Status: 200})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(page)
+	}))
+	defer server.Close()
+
+	src, err := NewJin10Source(Config{Name: "jin10", URL: server.URL, Options: map[string]interface{}{"max_age_hours": 6}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages, err := src.Fetch()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 2 {
+		titles := make([]string, 0, len(messages))
+		for _, msg := range messages {
+			titles = append(titles, msg.Title)
+		}
+		t.Fatalf("expected Fed bullet + one Nvidia message, got %d: %v", len(messages), titles)
+	}
+	var roundupMsg, nvdaMsg *model.Message
+	for _, msg := range messages {
+		if msg.GetStringMetadata("jin10_roundup") == "1" {
+			roundupMsg = msg
+		}
+		if strings.Contains(msg.Title, "英伟达") {
+			nvdaMsg = msg
+		}
+	}
+	if roundupMsg == nil || nvdaMsg == nil {
+		t.Fatalf("missing roundup or Nvidia message: %+v", messages)
+	}
+	if strings.Contains(roundupMsg.Content, "赦免") {
+		t.Fatalf("low-value roundup bullet leaked: %q", roundupMsg.Content)
+	}
+	scoreValue, ok := nvdaMsg.GetMetadata("jin10_score")
+	score, _ := scoreValue.(int)
+	if !ok || score == 0 {
+		t.Fatalf("score metadata missing: %v", nvdaMsg.Metadata)
+	}
+}
+
+func TestJin10FetchDedupesAcrossPolls(t *testing.T) {
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().In(loc)
+	page := jin10Response{Status: 200, Data: []jin10Flash{
+		jin10FlashItem("pboc-1", 1, now.Add(-1*time.Minute), "【央行开展5000亿元逆回购操作】中标利率1.50%。"),
+	}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("max_time") != "" {
+			_ = json.NewEncoder(w).Encode(jin10Response{Status: 200})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(page)
+	}))
+	defer server.Close()
+
+	src, err := NewJin10Source(Config{Name: "jin10", URL: server.URL, Options: map[string]interface{}{"max_age_hours": 6}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := src.Fetch()
+	if err != nil || len(first) != 1 {
+		t.Fatalf("first fetch messages=%d err=%v", len(first), err)
+	}
+	second, err := src.Fetch()
+	if err != nil || len(second) != 0 {
+		t.Fatalf("second fetch should dedupe, messages=%d err=%v", len(second), err)
 	}
 }

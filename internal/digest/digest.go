@@ -94,15 +94,16 @@ func (l RouteLane) Valid() bool {
 }
 
 type RouteRequest struct {
-	Source    string
-	MessageID string
-	Lane      RouteLane
-	Briefing  Briefing
-	MaxPerDay int
-	Priority  int
-	Critical  bool
-	Channels  []string
-	Payload   *model.Message
+	Source            string
+	MessageID         string
+	Lane              RouteLane
+	Briefing          Briefing
+	MaxPerDay         int
+	CriticalMaxPerDay int
+	Priority          int
+	Critical          bool
+	Channels          []string
+	Payload           *model.Message
 }
 
 type DirectClaim struct {

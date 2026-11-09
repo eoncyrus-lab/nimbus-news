@@ -15,10 +15,11 @@ import (
 )
 
 type typedRouteDecision struct {
-	lane     digest.RouteLane
-	band     *config.RouteBand
-	eval     filter.EvalResult
-	critical bool
+	lane        digest.RouteLane
+	band        *config.RouteBand
+	eval        filter.EvalResult
+	critical    bool
+	criticalMax int
 }
 
 func cloneMessageMetadata(metadata map[string]interface{}) map[string]interface{} {
@@ -82,6 +83,8 @@ func (e *NewsEngine) routeTypedMessages(ctx context.Context, sourceName string, 
 				if digestBandEligible(info.routing.Digest, decision.eval) || bypassDigestFallback(info.routing) {
 					decision.lane = digest.RouteDigest
 					decision.band = info.routing.Digest
+					// 降级进 digest 后不再享受 critical 绕过，否则会击穿聚合配额。
+					decision.critical = false
 					msg.SetMetadata("routing_lane", string(decision.lane))
 					if !e.admitTypedDigest(ctx, routedStore, sourceName, decision, msg) {
 						return false
@@ -165,7 +168,7 @@ func eventLaneDecision(decision *event.Decision) (typedRouteDecision, bool) {
 
 func (e *NewsEngine) decideTypedRoute(ctx context.Context, sourceName string, routing *config.SourceRoutingConfig, msg *model.Message) typedRouteDecision {
 	if routing.Critical || matchesCriticalKeyword(routing.CriticalKeywords, msg) {
-		return typedRouteDecision{lane: digest.RouteDirect, band: routing.Direct, critical: true}
+		return typedRouteDecision{lane: digest.RouteDirect, band: routing.Direct, critical: true, criticalMax: routing.CriticalMaxPerDay}
 	}
 	if routing.AIPolicy != config.AIPolicyRequired {
 		return defaultTypedRoute(routing, filter.EvalResult{})
@@ -324,7 +327,8 @@ func truncateTitle(title string, maxRunes int) string {
 }
 
 func routeRequest(sourceName string, msg *model.Message, decision typedRouteDecision, lane digest.RouteLane) digest.RouteRequest {
-	request := digest.RouteRequest{Source: sourceName, MessageID: msg.ID, Lane: lane, Critical: decision.critical}
+	request := digest.RouteRequest{Source: sourceName, MessageID: msg.ID, Lane: lane, Critical: decision.critical,
+		CriticalMaxPerDay: decision.criticalMax}
 	if decision.band != nil {
 		request.MaxPerDay = decision.band.MaxPerDay
 		request.Priority = routedPriority(decision.band.Priority, decision.eval)

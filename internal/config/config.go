@@ -29,13 +29,15 @@ type SourceConfig struct {
 // SourceRoutingConfig defines score-aware routing for a source. A nil Routing
 // on SourceConfig preserves the legacy delivery_mode behavior.
 type SourceRoutingConfig struct {
-	Critical         bool       `yaml:"critical,omitempty" json:"critical,omitempty"`
-	CriticalKeywords []string   `yaml:"critical_keywords,omitempty" json:"critical_keywords,omitempty"`
-	AIPolicy         string     `yaml:"ai_policy" json:"ai_policy"`
-	OnAIFailure      string     `yaml:"on_ai_failure" json:"on_ai_failure"`
-	Direct           *RouteBand `yaml:"direct,omitempty" json:"direct,omitempty"`
-	Digest           *RouteBand `yaml:"digest,omitempty" json:"digest,omitempty"`
-	Default          string     `yaml:"default" json:"default"`
+	Critical         bool     `yaml:"critical,omitempty" json:"critical,omitempty"`
+	CriticalKeywords []string `yaml:"critical_keywords,omitempty" json:"critical_keywords,omitempty"`
+	// CriticalMaxPerDay 给 critical 直推单独设日上限；0 表示沿用旧行为（不设上限）。
+	CriticalMaxPerDay int        `yaml:"critical_max_per_day,omitempty" json:"critical_max_per_day,omitempty"`
+	AIPolicy          string     `yaml:"ai_policy" json:"ai_policy"`
+	OnAIFailure       string     `yaml:"on_ai_failure" json:"on_ai_failure"`
+	Direct            *RouteBand `yaml:"direct,omitempty" json:"direct,omitempty"`
+	Digest            *RouteBand `yaml:"digest,omitempty" json:"digest,omitempty"`
+	Default           string     `yaml:"default" json:"default"`
 }
 
 // RouteBand selects a route and applies its quota and digest metadata.
@@ -409,6 +411,9 @@ func validateSourceRouting(source string, routing *SourceRoutingConfig) error {
 		if utf8.RuneCountInString(keyword) > 128 {
 			return fmt.Errorf("source %s: routing critical keyword cannot exceed 128 characters", source)
 		}
+	}
+	if routing.CriticalMaxPerDay < 0 || routing.CriticalMaxPerDay > 1000 {
+		return fmt.Errorf("source %s: routing critical_max_per_day must be between 0 and 1000", source)
 	}
 	if routing.Direct != nil && !routing.Critical && routing.AIPolicy != AIPolicyRequired &&
 		routing.Default != RouteDefaultDirect {

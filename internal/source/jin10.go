@@ -69,6 +69,12 @@ type Jin10Source struct {
 	lastSummary   string // 已汇总的本地日期，进程内保证一天一次
 	now           func() time.Time
 	mu            sync.Mutex
+
+	// 信噪比策略：0 表示回退到旧的关键词 accept；>0 时按评分过滤。
+	scoreThreshold int
+	splitRoundups  bool
+	dedupeWindow   time.Duration
+	recent         map[string]time.Time
 }
 
 type jin10Noise struct {
@@ -112,6 +118,10 @@ func NewJin10Source(cfg Config) (Source, error) {
 		summaryLimit:    20,
 		noise:           make(map[string]jin10Noise),
 		now:             time.Now,
+		scoreThreshold:  45,
+		splitRoundups:   true,
+		dedupeWindow:    2 * time.Hour,
+		recent:          make(map[string]time.Time),
 	}
 	if s.endpoint == "" {
 		s.endpoint = defaultJin10Endpoint
@@ -147,6 +157,17 @@ func NewJin10Source(cfg Config) (Source, error) {
 	}
 	if v := optionInt(cfg.Options, "noise_summary_limit"); v > 0 {
 		s.summaryLimit = v
+	}
+	if _, ok := cfg.Options["score_threshold"]; ok {
+		if v := optionInt(cfg.Options, "score_threshold"); v >= 0 {
+			s.scoreThreshold = v
+		}
+	}
+	if _, ok := cfg.Options["split_roundups"]; ok {
+		s.splitRoundups = optionBool(cfg.Options, "split_roundups")
+	}
+	if v := optionInt(cfg.Options, "dedupe_hours"); v > 0 {
+		s.dedupeWindow = time.Duration(v) * time.Hour
 	}
 	if raw, ok := cfg.Options["tags"].([]interface{}); ok {
 		s.tags = nil
@@ -221,33 +242,75 @@ func (s *Jin10Source) FetchContext(ctx context.Context) ([]*model.Message, error
 		if cleaned == "" {
 			continue
 		}
-		if !s.accept(cleaned, item.Important) {
-			// 个股公告不进实时推送，但按天留给汇总。
-			if keyword := firstMatchedKeyword(strings.ToLower(cleaned), s.excludeKeywords); keyword != "" {
-				s.recordNoise(item.ID, parseJin10Time(item.Time), cleaned, keyword, now)
-			}
-			continue
-		}
-		title, body := splitJin10Title(cleaned)
 		published := parseJin10Time(item.Time)
 		if published.IsZero() {
 			published = now
 		}
-		msg := &model.Message{
-			Type:       model.TypeNews,
-			ID:         hashString("jin10:" + item.ID),
-			Title:      title,
-			Content:    body,
-			Link:       "https://flash.jin10.com/detail/" + item.ID,
-			CreateTime: published,
-			FetchTime:  now,
-			Source:     s.name,
-			SourceType: "jin10",
-			Tags:       s.tags,
+		candidates := []string{cleaned}
+		if s.splitRoundups {
+			candidates = splitJin10Roundup(item.Data.Content, cleaned)
 		}
-		msg.SetMetadata("display_source", "金十数据")
-		msg.SetMetadata("important", item.Important)
-		messages = append(messages, msg)
+		emitted := 0
+		noiseKeyword := ""
+		for idx, candidate := range candidates {
+			candidate = strings.TrimSpace(candidate)
+			if candidate == "" {
+				continue
+			}
+			// 个股公告不进实时推送，但按天留给汇总；政策机构公告不算噪音。
+			if keyword := jin10NoiseKeyword(candidate, s.excludeKeywords); keyword != "" {
+				if noiseKeyword == "" {
+					noiseKeyword = keyword
+				}
+				continue
+			}
+			var scored jin10ScoreResult
+			if s.scoreThreshold > 0 {
+				scored = scoreJin10(candidate, item.Important)
+				if scored.Drop || scored.Score < s.scoreThreshold {
+					continue
+				}
+			} else if !s.accept(candidate, item.Important) {
+				continue
+			}
+			if s.duplicateContent(candidate, now) {
+				continue
+			}
+			title, body := splitJin10Title(candidate)
+			id := "jin10:" + item.ID
+			if len(candidates) > 1 {
+				id = fmt.Sprintf("jin10:%s#%d", item.ID, idx+1)
+			}
+			msg := &model.Message{
+				Type:       model.TypeNews,
+				ID:         hashString(id),
+				Title:      title,
+				Content:    body,
+				Link:       "https://flash.jin10.com/detail/" + item.ID,
+				CreateTime: published,
+				FetchTime:  now,
+				Source:     s.name,
+				SourceType: "jin10",
+				Tags:       s.tags,
+			}
+			msg.SetMetadata("display_source", "金十数据")
+			msg.SetMetadata("important", item.Important)
+			if s.scoreThreshold > 0 {
+				msg.SetMetadata("jin10_score", scored.Score)
+				msg.SetMetadata("jin10_reasons", strings.Join(scored.Reasons, ","))
+			}
+			if len(candidates) > 1 {
+				msg.SetMetadata("jin10_roundup", "1")
+			}
+			messages = append(messages, msg)
+			emitted++
+			if len(messages) >= s.limit {
+				break
+			}
+		}
+		if emitted == 0 && noiseKeyword != "" {
+			s.recordNoise(item.ID, published, cleaned, noiseKeyword, now)
+		}
 		if len(messages) >= s.limit {
 			break
 		}
@@ -268,6 +331,44 @@ func (s *Jin10Source) noiseCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.noise)
+}
+
+// duplicateContent 按归一化正文去重。金十同一内容会用不同 ID 重复下发，
+// 仅按 ID 去重拦不住。
+func (s *Jin10Source) duplicateContent(text string, now time.Time) bool {
+	key := hashString(normalizeJin10Content(text))
+	if key == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.recent == nil {
+		s.recent = make(map[string]time.Time)
+	}
+	window := s.dedupeWindow
+	if window <= 0 {
+		window = s.maxAge
+	}
+	for existing, seenAt := range s.recent {
+		if now.Sub(seenAt) > window {
+			delete(s.recent, existing)
+		}
+	}
+	if _, ok := s.recent[key]; ok {
+		return true
+	}
+	if len(s.recent) >= 2000 {
+		oldestKey := ""
+		var oldest time.Time
+		for existing, seenAt := range s.recent {
+			if oldestKey == "" || seenAt.Before(oldest) {
+				oldestKey, oldest = existing, seenAt
+			}
+		}
+		delete(s.recent, oldestKey)
+	}
+	s.recent[key] = now
+	return false
 }
 
 // recordNoise 把被丢弃的个股公告放进当天待汇总集合；同一 ID 只记一次。

@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
@@ -409,6 +410,22 @@ func (s *DigestStore) admitRoute(ctx context.Context, request digest.RouteReques
 		if !request.Critical && request.MaxPerDay > 0 && used >= request.MaxPerDay {
 			return nil
 		}
+		if request.Critical && request.CriticalMaxPerDay > 0 {
+			criticalKey := routeCriticalQuotaKey(date, request.Source)
+			criticalUsed := readRouteQuota(quotas.Get(criticalKey))
+			if criticalUsed >= request.CriticalMaxPerDay {
+				result.Used = criticalUsed
+				result.Limit = request.CriticalMaxPerDay
+				slog.Info("critical quota exhausted", "source", request.Source,
+					"used", criticalUsed, "limit", request.CriticalMaxPerDay)
+				return nil
+			}
+			result.Used = criticalUsed + 1
+			result.Limit = request.CriticalMaxPerDay
+			if err := writeRouteQuota(quotas, criticalKey, result.Used); err != nil {
+				return err
+			}
+		}
 		result.Admitted = true
 		// Critical admissions retain their durable idempotency/audit record but
 		// do not consume the ordinary daily lane quota.
@@ -540,6 +557,11 @@ func findSameDayRouteRecord(bucket *bolt.Bucket, date, source, messageID string)
 
 func routeQuotaKey(date, source string, lane digest.RouteLane) []byte {
 	return []byte(date + "\x00" + digestHash(source) + "\x00" + string(lane))
+}
+
+// routeCriticalQuotaKey 给 critical 直推单独计数，避免 critical 绕过普通配额后无限放大。
+func routeCriticalQuotaKey(date, source string) []byte {
+	return []byte(date + "\x00" + digestHash(source) + "\x00critical")
 }
 
 func readRouteQuota(raw []byte) int {

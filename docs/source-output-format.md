@@ -1,22 +1,27 @@
 # 数据源输出格式（2026-11-09 实测）
 
-本文记录当前 12 个启用源各拉取一次的真实输出：状态、条数、耗时、消息结构、
+本文记录当前全部启用源各拉取一次的真实输出：状态、条数、耗时、消息结构、
 正文形态与元数据。样本取自 `cmd/source-dump`，已截断长正文，保留原始格式。
 
 ## 1. 采集方式
 
 ```bash
-# 先把 venv 前置到 PATH（脚本源用 python3 调 akshare）
+# 1) 生成 dump 配置（从 config.platform.yaml.example 派生，勿手改）
+make dump-config
+
+# 2) 先把 venv 前置到 PATH（脚本源用 python3 调 akshare）
 export PATH="$PWD/.venv/bin:$PATH"
-go run ./cmd/source-dump -config /tmp/nimbus-dump/config.yaml \
+go run ./cmd/source-dump -config config.dump.yaml \
   -out /tmp/nimbus-dump/out -timeout 240s
 
 # 单源
 ... -name bwe-tradfi
 ```
 
-- dump 配置 = 线上配置去掉 `channels`（不推送），时段源加 `force: true`（跳过交易日判断），
-  所有 RSS 的 `max_age_hours` 放宽到 240（否则 4 小时窗口会漏掉低频源）。
+- `config.dump.yaml` 由 `make dump-config` 生成（已 gitignore）：session 源加
+  `force: true` 并去掉 `schedule`/`sinks`，追加 `brief-*` 源把时段成员拆开逐段核对。
+  模板改了必须重新生成，否则会拿旧参数跑出假结果（金十评分参数就这样漂移过一次）。
+- `max_age_hours` 沿用模板值；低频源（Fed 等）窗口内没有新条目时输出 0 条，不是故障。
 - 必须用 `.venv/bin` 前置 PATH：脚本源调用 `python3`，系统 Python 没有 akshare/numpy。
 - 结果信封：
 

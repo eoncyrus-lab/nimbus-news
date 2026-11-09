@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -142,6 +143,8 @@ func (s *MarketBriefingSource) FetchContext(parent context.Context) ([]*model.Me
 		messages, err = s.fetchUSClose(parent)
 	case "us_overnight":
 		messages, err = s.fetchUSOvernight(parent)
+	case "hk_close":
+		messages, err = s.fetchHKClose(parent)
 	case "aggregate":
 		messages, err = s.fetchAggregate(parent)
 	default:
@@ -843,6 +846,7 @@ func (s *MarketBriefingSource) fetchUSPreview(parent context.Context) ([]*model.
 	quoteLines := s.fetchQuotesBlock(ctx, ussymbols)
 	preLines := s.fetchExtendedLines(ctx, []string{"SPY", "QQQ", "KWEB", "FXI"}, "盘前")
 	rateLines := fetchRatesBlock(ctx)
+	chinaNight := chinaNightLines(ctx, "")
 
 	// 3. AI 叙事
 	narrative := s.usPreviewNarrative(ctx, quoteLines, fedwatchRaw, vixTermRaw)
@@ -851,7 +855,7 @@ func (s *MarketBriefingSource) fetchUSPreview(parent context.Context) ([]*model.
 		return nil, nil
 	}
 
-	content := s.renderUSPreview(preLines, quoteLines, rateLines, fedwatchRaw, vixTermRaw, narrative)
+	content := s.renderUSPreview(preLines, quoteLines, rateLines, chinaNight, fedwatchRaw, vixTermRaw, narrative)
 	now := time.Now()
 	id := fmt.Sprintf("us_preview_%s", now.Format("20060102"))
 	msg := &model.Message{
@@ -873,6 +877,7 @@ func (s *MarketBriefingSource) renderUSPreview(
 	preLines []string,
 	quotes []string,
 	rateLines []string,
+	chinaNight []string,
 	fedwatchRaw string,
 	vixTermRaw string,
 	narrative string,
@@ -897,6 +902,14 @@ func (s *MarketBriefingSource) renderUSPreview(
 		b.WriteString("暂无数据\n")
 	}
 	b.WriteString("\n")
+
+	if len(chinaNight) > 0 {
+		b.WriteString("── 中国夜盘 ──\n")
+		for _, line := range chinaNight {
+			b.WriteString(line + "\n")
+		}
+		b.WriteString("\n")
+	}
 
 	if len(rateLines) > 0 {
 		b.WriteString("── 利率与美元 ──\n")
@@ -950,6 +963,7 @@ func (s *MarketBriefingSource) fetchUSClose(parent context.Context) ([]*model.Me
 	sectorChanges := s.quoteChanges(ctx, spdrSectorSymbols)
 	sectorLines := append(summarizeSectors(sectorChanges), s.breadthLines(ctx, sectorChanges)...)
 	chinaLines := s.fetchQuotesBlock(ctx, []string{"KWEB", "FXI", "SOXX"})
+	chinaLines = append(chinaLines, chinaNightLines(ctx, "收盘")...)
 	var earningsLines []string
 	if s.includeEarnings {
 		earningsLines = fetchEarningsBlock(ctx, time.Now().In(newYorkLocation()).Format("2006-01-02"), s.earningsMinCap)
@@ -1519,6 +1533,165 @@ func (s *MarketBriefingSource) usPreviewNarrative(
 }
 
 // ── 工具方法 ──
+
+// ── 港股收盘与夜期（新浪公开行情，非官方接口，失败静默降级）──
+
+type sinaQuote struct {
+	price float64
+	prev  float64
+	pct   float64
+}
+
+func parseSinaHQ(body string) map[string]sinaQuote {
+	out := make(map[string]sinaQuote)
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "var hq_str_") {
+			continue
+		}
+		eq := strings.Index(line, "=\"")
+		if eq < 0 {
+			continue
+		}
+		code := strings.TrimPrefix(line[:eq], "var hq_str_")
+		rest := line[eq+2:]
+		if end := strings.LastIndex(rest, "\""); end >= 0 {
+			rest = rest[:end]
+		}
+		fields := strings.Split(rest, ",")
+		if strings.HasPrefix(code, "hf_") {
+			if len(fields) < 8 {
+				continue
+			}
+			price := parseFloat(fields[0])
+			prev := parseFloat(fields[7])
+			if price <= 0 {
+				continue
+			}
+			pct := 0.0
+			if prev > 0 {
+				pct = (price - prev) / prev * 100
+			}
+			out[code] = sinaQuote{price: price, prev: prev, pct: pct}
+			continue
+		}
+		if len(fields) < 9 {
+			continue
+		}
+		price := parseFloat(fields[6])
+		prev := parseFloat(fields[3])
+		if price <= 0 {
+			continue
+		}
+		out[code] = sinaQuote{price: price, prev: prev, pct: parseFloat(fields[8])}
+	}
+	return out
+}
+
+func parseFloat(value string) float64 {
+	v, _ := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	return v
+}
+
+func fetchSinaQuotes(ctx context.Context, codes []string) map[string]sinaQuote {
+	endpoint := "https://hq.sinajs.cn/list=" + strings.Join(codes, ",")
+	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("Referer", "https://finance.sina.com.cn")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)")
+	client := &http.Client{Timeout: 6 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if err != nil {
+		return nil
+	}
+	return parseSinaHQ(string(body))
+}
+
+func sinaLine(q sinaQuote, label string) string {
+	icon := "🔹"
+	if q.pct > 0.05 {
+		icon = "🟢"
+	} else if q.pct < -0.05 {
+		icon = "🔴"
+	}
+	return fmt.Sprintf("%s %s: %.2f (%+.2f%%)", icon, label, q.price, q.pct)
+}
+
+// fetchHKClose 港股收盘：恒指/国企/恒生科技/AH 溢价。
+func (s *MarketBriefingSource) fetchHKClose(parent context.Context) ([]*model.Message, error) {
+	if !hkWeekday(time.Now()) {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+	defer cancel()
+	quotes := fetchSinaQuotes(ctx, []string{"rt_hkHSI", "rt_hkHSCEI", "rt_hkHSTECH", "rt_hkHSAHP"})
+	if len(quotes) == 0 {
+		return nil, nil
+	}
+	var b strings.Builder
+	b.WriteString("── 港股收盘 ──\n")
+	for _, item := range []struct {
+		code  string
+		label string
+	}{
+		{"rt_hkHSI", "恒生指数"},
+		{"rt_hkHSCEI", "国企指数"},
+		{"rt_hkHSTECH", "恒生科技"},
+	} {
+		if q, ok := quotes[item.code]; ok {
+			b.WriteString(sinaLine(q, item.label) + "\n")
+		}
+	}
+	if q, ok := quotes["rt_hkHSAHP"]; ok {
+		b.WriteString(fmt.Sprintf("\nAH 溢价指数: %.2f (%+.2f%%)，越高说明 A 股相对 H 股越贵\n", q.price, q.pct))
+	}
+	now := time.Now()
+	msg := &model.Message{
+		Type:       model.TypeAnalysis,
+		ID:         fmt.Sprintf("hk_close_%s", now.Format("20060102")),
+		Title:      fmt.Sprintf("🇭🇰 港股收盘 · %s", now.Format("01-02")),
+		Content:    b.String(),
+		Source:     s.name,
+		SourceType: "market-briefing",
+		CreateTime: now,
+		FetchTime:  now,
+		Tags:       []string{"港股", "收盘", "AH溢价"},
+	}
+	msg.SetMetadata("display_source", "港股收盘")
+	return []*model.Message{msg}, nil
+}
+
+// chinaNightLines 返回恒指夜期与富时中国 A50 夜盘。suffix 用于收盘后的"收盘"标注。
+func chinaNightLines(ctx context.Context, suffix string) []string {
+	quotes := fetchSinaQuotes(ctx, []string{"hf_HSI", "hf_CHA50CFD"})
+	var out []string
+	if q, ok := quotes["hf_HSI"]; ok {
+		out = append(out, sinaLine(q, "恒指夜期"+suffix))
+	}
+	if q, ok := quotes["hf_CHA50CFD"]; ok {
+		out = append(out, sinaLine(q, "A50夜盘"+suffix))
+	}
+	return out
+}
+
+func hkWeekday(now time.Time) bool {
+	loc, err := time.LoadLocation("Asia/Hong_Kong")
+	if err != nil {
+		loc = time.FixedZone("HKT", 8*60*60)
+	}
+	wd := now.In(loc).Weekday()
+	return wd != time.Saturday && wd != time.Sunday
+}
 
 // quoteDisplayNames 让关键标的在简报里显示可读名称，而不是被截断的 Yahoo 全名。
 var quoteDisplayNames = map[string]string{

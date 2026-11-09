@@ -425,6 +425,10 @@ sources:
           options:
             window_hours: 8
             limit: 8
+        - label: "港股收盘"
+          type: "market-briefing"
+          options:
+            briefing_type: "hk_close"
         - label: "美股夜盘"
           type: "market-briefing"
           options:

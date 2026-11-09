@@ -27,7 +27,7 @@ docs/                      # 部署、架构与维护文档
 
 ## 配置约定
 
-- `config.platform.yaml.example`: 当前 12 源/2 渠道拓扑的无密钥模板
+- `config.platform.yaml.example`: 当前 15 源/2 渠道拓扑的无密钥模板
 - `config.platform.yaml`: 本地运行配置，已加入 `.gitignore`
 - `config.platform.vps.yaml`: VPS 运行配置（含密钥，本地为真源），已加入 `.gitignore`
 - `.env.example`: 可提交的环境变量模板
@@ -36,8 +36,7 @@ docs/                      # 部署、架构与维护文档
 首次部署：
 
 ```bash
-cp config.platform.yaml.example config.platform.yaml
-cp .env.example .env
+make init                 # 生成 config.platform.yaml / .env（已存在则跳过）
 ```
 
 然后只在 `.env` 里填写密钥。`config.platform.yaml` 保留 `${VAR}` 引用，不要把
@@ -88,9 +87,17 @@ git push origin main      # VPS cron 每 5 分钟自构建；构建/重启/存�
 **Mac（launchd，standby）**
 
 ```bash
-make install-mac          # 构建 + 渲染 plist + launchctl bootstrap
+make mac-bootstrap        # 首次：生成 config/.env + 装 Python 依赖 + 构建 + 注册 launchd
+make install-mac          # 日常更新：构建 + 重载 launchd
+make mac-restart          # 只改 .env/config 时重启
+make mac-status           # launchd 状态 + 健康探针
+make mac-logs             # tail 本机日志
 make uninstall-mac
 ```
+
+Mac 默认以 `standby` 运行（`launch-mac.sh` 在 `.env` 未指定角色时注入），
+不摄入、不推送，只提供只读 API；要改成 `admin`/`active` 写进 `.env` 后 `make mac-restart`。
+首次部署、日志路径和排障见 [部署说明](docs/deployment.md#maclaunchdstandby)。
 
 部署脚本的健康回滚只检查 `/api/health/live`（进程级）。`/api/health` 是就绪探针，
 digest 积压时会返回 503，不能用来判定版本好坏。
@@ -100,10 +107,12 @@ digest 积压时会返回 503，不能用来判定版本好坏。
 定时报告会调用 `scripts/` 下的 Python 脚本（akshare/ecocal 等）。先建 venv：
 
 ```bash
-make python-deps
+make python-deps                        # 默认 python3
+make python-deps PYTHON=python3.12      # 指定解释器（推荐 3.12）
 ```
 
-`venv/bin` 已由启动脚本前置到 `PATH`，脚本源 subprocess 会自动使用该解释器。
+`.venv/bin` 已由启动脚本前置到 `PATH`，脚本源 subprocess 会自动使用该解释器。
+`make mac-bootstrap` 会一并安装这些依赖。
 
 ## 常用命令
 

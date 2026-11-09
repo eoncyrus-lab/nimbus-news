@@ -1,7 +1,7 @@
 #!/bin/bash
 # macOS 本机启动脚本：加载 .env，前置 venv python，exec platform。
 # launchd 通过 deploy/com.news.platform.plist 调用本脚本；手工调试也可直接运行。
-set -e
+set -eo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
@@ -15,9 +15,22 @@ if [ -f .env ]; then
     set +a
 fi
 
+CONFIG="${NIMBUS_CONFIG:-config.platform.yaml}"
+
+# 双实例：Mac 默认 standby（只读常驻），避免和 VPS 双活。
+# .env 里显式设置 NIMBUS_RUNTIME_ROLE=active/admin 可覆盖。
+export NIMBUS_RUNTIME_ROLE="${NIMBUS_RUNTIME_ROLE:-standby}"
+
 # 调度器按本地时区计算推送时间，必须固定为北京时间
 export TZ=Asia/Shanghai
 
-# 双实例：本机默认 standby（只读常驻），由 .env 的 NIMBUS_RUNTIME_ROLE 覆盖。
-# 未设置时用 config.platform.yaml 里的 runtime.role。
-exec ./bin/platform -config config.platform.yaml
+if [ ! -x ./bin/platform ]; then
+    echo "ERROR: 缺少 $ROOT/bin/platform，先运行 make build-native" >&2
+    exit 1
+fi
+if [ ! -f "$CONFIG" ]; then
+    echo "ERROR: 缺少配置文件 $ROOT/$CONFIG，先运行 make init" >&2
+    exit 1
+fi
+
+exec ./bin/platform -config "$CONFIG"

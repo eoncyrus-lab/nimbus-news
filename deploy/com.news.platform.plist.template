@@ -46,7 +46,7 @@
     <key>TZ</key>
     <string>Asia/Shanghai</string>
     <key>PATH</key>
-    <string>__ROOT__/venv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <string>__ROOT__/.venv/bin:__ROOT__/venv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
   </dict>
 </dict>
 </plist>

@@ -27,3 +27,21 @@ func TestRenderAshareMappingStockChains(t *testing.T) {
 		t.Fatalf("override chain not used: %v", override)
 	}
 }
+
+func TestParseSinaHQ(t *testing.T) {
+	body := `var hq_str_rt_hkHSI="HSI,恒生指数,24625.710,24481.859,24738.880,24421.110,24448.951,-32.910,-0.130,0.000,0.000,0,0,0.000,0.000,28056.100,22518.000,2026/11/09,16:08:26,,,,,";
+var hq_str_hf_HSI="24520.810,,24515.000,24520.000,24529.000,24495.000,17:32:50,24519.000,24519.000,17142,4,9,2026-11-09,恒生指数期货,24";
+var hq_str_rt_hkHSAHP="HSAHP,HSAHP,128.7200,129.5800,130.4700,128.5500,130.3700,0.7900,0.6097,0.0000,0.0000,0.0000,0,0.0000,0.0000,0.0000,0.0000,2026/11/09,16:08:26,,,,,";`
+	quotes := parseSinaHQ(body)
+	hsi, ok := quotes["rt_hkHSI"]
+	if !ok || hsi.price != 24448.951 || hsi.pct != -0.13 {
+		t.Fatalf("rt_hkHSI = %+v", hsi)
+	}
+	hf, ok := quotes["hf_HSI"]
+	if !ok || hf.price != 24520.81 || hf.prev != 24519 {
+		t.Fatalf("hf_HSI = %+v", hf)
+	}
+	if got := quotes["rt_hkHSAHP"].price; got != 130.37 {
+		t.Fatalf("HSAHP price = %v", got)
+	}
+}

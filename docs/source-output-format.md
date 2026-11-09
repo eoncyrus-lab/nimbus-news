@@ -340,6 +340,7 @@ A股 恐慌分 20/100（平静）| RV20 16.1% | 日涨跌 +0.32% | 距20日高 -
 |---|---|---|
 | 美盘行情（market-briefing/us_preview） | `── 关键标的 ──`、`── VIX ──`、`── 利率路径 ──` | Go 行情；FedWatch 可选 |
 | 美盘收盘（market-briefing/us_close） | `── 收盘指数 ──`、`── 利率与美元 ──`、`── 板块轮动 ──`（含板块宽度/等权vs市值）、`── 盘后/盘前 ──`、`── 夜盘期货与汇率 ──`、`── 中国与半导体 ──`、`── 今日盘后财报 ──`、`── 对 A 股映射 ──`（含产业链个股） | 美东 20:05；盘后用 Nasdaq ETF 报价；财报用 Nasdaq 日历；均为非官方接口，失败静默降级 |
+| 港股收盘（market-briefing/hk_close） | `── 港股收盘 ──` + AH 溢价指数 | 新浪公开行情；恒指/国企/恒生科技 |
 | 美股夜盘（market-briefing/us_overnight） | `── 夜盘期货与汇率 ──`、`── ETF 夜盘/盘前 ──`、`── 对今日 A 股映射 ──` | 作 session-close 成员，北京时间 16:10 左右 |
 | 美国宏观（us-macro-report） | FRED 核心指标/流动性 | 需要 `FRED_API_KEY` |
 | 明日数据（script） | `── 🌏 经济事件 MM-DD ──` | `scripts/econ_calendar.py` |

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Ricaardo/nimbus-os/news/internal/model"
 )
@@ -232,5 +233,55 @@ func TestSessionSourceDegradesMemberCreateError(t *testing.T) {
 	}
 	if !strings.Contains(messages[0].Content, "数据源异常：缺密钥") {
 		t.Fatalf("missing degradation note: %s", messages[0].Content)
+	}
+}
+
+func TestUSSessionPhaseFollowsEasternTime(t *testing.T) {
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	makeSession := func(session, phase string) *SessionSource {
+		return &SessionSource{session: session, phase: phase}
+	}
+
+	// 夏令时（EDT, UTC-4）：北京 21:00 = 美东 09:00，21:00 槽生效，22:00 槽跳过。
+	summerPre := makeSession(sessionUS, "preopen")
+	if !summerPre.sessionActive(time.Date(2026, 7, 15, 21, 0, 0, 0, loc)) {
+		t.Fatal("summer 21:00 Beijing should be preopen (09:00 ET)")
+	}
+	if summerPre.sessionActive(time.Date(2026, 7, 15, 22, 0, 0, 0, loc)) {
+		t.Fatal("summer 22:00 Beijing is 10:00 ET, preopen must skip")
+	}
+
+	// 冬令时（EST, UTC-5）：北京 22:00 = 美东 09:00，22:00 槽生效，21:00 槽跳过。
+	winterPre := makeSession(sessionUS, "preopen")
+	if winterPre.sessionActive(time.Date(2026, 11, 9, 21, 0, 0, 0, loc)) {
+		t.Fatal("winter 21:00 Beijing is 08:00 ET, preopen must skip")
+	}
+	if !winterPre.sessionActive(time.Date(2026, 11, 9, 22, 0, 0, 0, loc)) {
+		t.Fatal("winter 22:00 Beijing should be preopen (09:00 ET)")
+	}
+
+	// 收盘：北京 04:05（夏）/05:05（冬）= 美东 16:05。
+	closeSession := makeSession(sessionUSClose, "")
+	if !closeSession.sessionActive(time.Date(2026, 7, 15, 4, 5, 0, 0, loc)) {
+		t.Fatal("summer 04:05 Beijing should be US close")
+	}
+	// 北京 11-10 05:05 = 美东 11-09 16:05（周一收盘）。
+	if !closeSession.sessionActive(time.Date(2026, 11, 10, 5, 5, 0, 0, loc)) {
+		t.Fatal("winter 05:05 Beijing should be US close")
+	}
+	if closeSession.sessionActive(time.Date(2026, 7, 15, 5, 5, 0, 0, loc)) {
+		t.Fatal("summer 05:05 Beijing is 17:05 ET, close must skip")
+	}
+
+	// 周末按美东日期跳过：北京周一 22:00 = 美东周日。
+	if winterPre.sessionActive(time.Date(2026, 11, 9, 22, 0, 0, 0, loc)) == false {
+		t.Fatal("2026-11-09 is Monday in both zones")
+	}
+	sundayET := time.Date(2026, 11, 8, 22, 0, 0, 0, loc) // 北京周日 22:00 = 美东周日 09:00
+	if winterPre.sessionActive(sundayET) {
+		t.Fatal("US session must skip Sunday in New York")
 	}
 }

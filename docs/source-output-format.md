@@ -251,8 +251,11 @@ Fed 等按 URL 映射，未知域名回落 `RSS`。
 ```
 
 - 走公开 JSON API，每次约 20 条，按 `max_time` 翻页；默认 3 小时内最多 40 条。
-- 过滤：`important=1` 或命中宏观关键词才保留；个股公告类（公告/减持/解禁/业绩预告…）直接丢弃。
+- 过滤：`important=1` 或命中宏观关键词才保留；个股公告类（公告/减持/解禁/业绩预告…）不进实时推送。
 - 标题优先取 `【】` 内的内容，没有则取第一句（≤60 字符）。
+- 公告噪音在源内按天攒着，每天 `noise_summary_time`（默认 08:30，30 分钟窗口）汇总成一条
+  `type=analysis` 的消息：标题 `📋 金十公告汇总 · 近24小时（N 条）`，正文按类计数 + 列出前
+  `noise_summary_limit` 条。它不进事件引擎，也不占实时判定；`noise_daily_summary: false` 可关。
 - 实测 2 小时窗口 40 条上游快讯 → 17 条有效，宏观/央行/伊朗/原油为主。
 
 ## 5. 时段简报（session）
@@ -336,6 +339,7 @@ A股 恐慌分 20/100（平静）| RV20 16.1% | 日涨跌 +0.32% | 距20日高 -
 | 成员 | 段落 | 数据 |
 |---|---|---|
 | 美盘行情（market-briefing/us_preview） | `── 关键标的 ──`、`── VIX ──`、`── 利率路径 ──` | Go 行情；FedWatch 可选 |
+| 美盘收盘（market-briefing/us_close） | `── 收盘指数 ──`、`── 夜盘与盘后 ──`、`── AI 收盘复盘 ──` | 美东 16:05；ES/NQ 代理夜盘 |
 | 美国宏观（us-macro-report） | FRED 核心指标/流动性 | 需要 `FRED_API_KEY` |
 | 明日数据（script） | `── 🌏 经济事件 MM-DD ──` | `scripts/econ_calendar.py` |
 | 资讯摘要（market-briefing/aggregate） | `## 资讯摘要` | digest 租约桶 |

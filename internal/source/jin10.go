@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Ricaardo/nimbus-os/news/internal/model"
@@ -58,6 +60,22 @@ type Jin10Source struct {
 	excludeKeywords []string
 	tags            []string
 	client          *http.Client
+
+	// 个股公告噪音不进实时推送，按天攒成一条汇总。
+	noiseSummary  bool
+	summaryMinute int // 汇总发车时刻（当天分钟数），默认 08:30
+	summaryLimit  int // 汇总里最多列出的条数
+	noise         map[string]jin10Noise
+	lastSummary   string // 已汇总的本地日期，进程内保证一天一次
+	now           func() time.Time
+	mu            sync.Mutex
+}
+
+type jin10Noise struct {
+	ID      string
+	Title   string
+	Keyword string
+	Time    time.Time
 }
 
 // 默认保留的宏观/政策/商品关键词。个股公告通常不含这些词，会被过滤掉。
@@ -89,6 +107,11 @@ func NewJin10Source(cfg Config) (Source, error) {
 		excludeKeywords: append([]string(nil), jin10DefaultExclude...),
 		tags:            []string{"中国", "宏观", "金十"},
 		client:          &http.Client{Timeout: jin10RequestTimeout},
+		noiseSummary:    true,
+		summaryMinute:   8*60 + 30,
+		summaryLimit:    20,
+		noise:           make(map[string]jin10Noise),
+		now:             time.Now,
 	}
 	if s.endpoint == "" {
 		s.endpoint = defaultJin10Endpoint
@@ -114,6 +137,17 @@ func NewJin10Source(cfg Config) (Source, error) {
 	if keywords := optionStrings(cfg.Options, "exclude_keywords"); len(keywords) > 0 {
 		s.excludeKeywords = keywords
 	}
+	if _, ok := cfg.Options["noise_daily_summary"]; ok {
+		s.noiseSummary = optionBool(cfg.Options, "noise_daily_summary")
+	}
+	if value, ok := cfg.Options["noise_summary_time"].(string); ok {
+		if minute, ok := parseClockMinute(value); ok {
+			s.summaryMinute = minute
+		}
+	}
+	if v := optionInt(cfg.Options, "noise_summary_limit"); v > 0 {
+		s.summaryLimit = v
+	}
 	if raw, ok := cfg.Options["tags"].([]interface{}); ok {
 		s.tags = nil
 		for _, value := range raw {
@@ -135,7 +169,7 @@ func (s *Jin10Source) Fetch() ([]*model.Message, error) {
 }
 
 func (s *Jin10Source) FetchContext(ctx context.Context) ([]*model.Message, error) {
-	now := time.Now()
+	now := s.now()
 	seen := make(map[string]struct{})
 	var flashes []jin10Flash
 	maxTime := ""
@@ -184,7 +218,14 @@ func (s *Jin10Source) FetchContext(ctx context.Context) ([]*model.Message, error
 	messages := make([]*model.Message, 0, len(flashes))
 	for _, item := range flashes {
 		cleaned := htmlToPlainText(item.Data.Content)
-		if cleaned == "" || !s.accept(cleaned, item.Important) {
+		if cleaned == "" {
+			continue
+		}
+		if !s.accept(cleaned, item.Important) {
+			// 个股公告不进实时推送，但按天留给汇总。
+			if keyword := firstMatchedKeyword(strings.ToLower(cleaned), s.excludeKeywords); keyword != "" {
+				s.recordNoise(item.ID, parseJin10Time(item.Time), cleaned, keyword, now)
+			}
 			continue
 		}
 		title, body := splitJin10Title(cleaned)
@@ -212,8 +253,172 @@ func (s *Jin10Source) FetchContext(ctx context.Context) ([]*model.Message, error
 		}
 	}
 
-	slog.Info("jin10 fetched", "source", s.name, "messages", len(messages), "flashes", len(flashes))
+	// 公告汇总按本地时间的固定窗口发一次，不跟随实时推送。
+	pendingNoise := s.noiseCount()
+	if summary := s.takeNoiseSummary(now); summary != nil {
+		messages = append(messages, summary)
+	}
+
+	slog.Info("jin10 fetched", "source", s.name, "messages", len(messages), "flashes", len(flashes),
+		"noise_pending", pendingNoise)
 	return messages, nil
+}
+
+func (s *Jin10Source) noiseCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.noise)
+}
+
+// recordNoise 把被丢弃的个股公告放进当天待汇总集合；同一 ID 只记一次。
+func (s *Jin10Source) recordNoise(id string, published time.Time, content, keyword string, now time.Time) {
+	if id == "" {
+		return
+	}
+	if published.IsZero() {
+		published = now
+	}
+	title, _ := splitJin10Title(content)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.noise == nil {
+		s.noise = make(map[string]jin10Noise)
+	}
+	if _, ok := s.noise[id]; ok {
+		return
+	}
+	if len(s.noise) >= 1000 {
+		oldestID := ""
+		var oldest time.Time
+		for key, item := range s.noise {
+			if oldestID == "" || item.Time.Before(oldest) {
+				oldestID, oldest = key, item.Time
+			}
+		}
+		delete(s.noise, oldestID)
+	}
+	s.noise[id] = jin10Noise{ID: id, Title: title, Keyword: keyword, Time: published}
+}
+
+// takeNoiseSummary 在汇总窗口内取出待汇总的公告并清空；一天最多一次。
+func (s *Jin10Source) takeNoiseSummary(now time.Time) *model.Message {
+	if !s.noiseSummary {
+		return nil
+	}
+	loc := jin10Location()
+	local := now.In(loc)
+	if !inClockWindow(local, s.summaryMinute, 30) {
+		return nil
+	}
+	day := local.Format("2006-01-02")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lastSummary == day || len(s.noise) == 0 {
+		return nil
+	}
+	items := make([]jin10Noise, 0, len(s.noise))
+	for _, item := range s.noise {
+		items = append(items, item)
+	}
+	sort.SliceStable(items, func(i, j int) bool { return items[i].Time.Before(items[j].Time) })
+	s.noise = make(map[string]jin10Noise)
+	s.lastSummary = day
+	return s.buildNoiseSummary(items, local)
+}
+
+func (s *Jin10Source) buildNoiseSummary(items []jin10Noise, now time.Time) *model.Message {
+	counts := make(map[string]int)
+	for _, item := range items {
+		counts[item.Keyword]++
+	}
+	keywords := make([]string, 0, len(counts))
+	for keyword := range counts {
+		keywords = append(keywords, keyword)
+	}
+	sort.SliceStable(keywords, func(i, j int) bool {
+		if counts[keywords[i]] != counts[keywords[j]] {
+			return counts[keywords[i]] > counts[keywords[j]]
+		}
+		return keywords[i] < keywords[j]
+	})
+	parts := make([]string, 0, len(keywords))
+	for _, keyword := range keywords {
+		parts = append(parts, fmt.Sprintf("%s %d", keyword, counts[keyword]))
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "── 个股公告噪音 · 近24小时 · 共 %d 条 ──\n", len(items))
+	b.WriteString("按类：" + strings.Join(parts, " · ") + "\n")
+	loc := jin10Location()
+	listed := 0
+	for _, item := range items {
+		if listed >= s.summaryLimit {
+			fmt.Fprintf(&b, "…另有 %d 条未列出\n", len(items)-listed)
+			break
+		}
+		title := item.Title
+		if title == "" {
+			title = item.Keyword
+		}
+		fmt.Fprintf(&b, "- %s %s\n", item.Time.In(loc).Format("15:04"), truncateRunes(title, 60))
+		listed++
+	}
+
+	msg := &model.Message{
+		Type:       model.TypeAnalysis, // 不进事件引擎，不做实时判定
+		ID:         hashString("jin10-noise:" + now.Format("20060102")),
+		Title:      fmt.Sprintf("📋 金十公告汇总 · 近24小时（%d 条）", len(items)),
+		Content:    b.String(),
+		Source:     s.name,
+		SourceType: "jin10",
+		CreateTime: now,
+		FetchTime:  now,
+		Tags:       []string{"公告", "每日汇总"},
+	}
+	msg.SetMetadata("display_source", "金十公告汇总")
+	msg.SetMetadata("noise_summary", "1")
+	return msg
+}
+
+// firstMatchedKeyword 返回命中的第一个关键词，用于汇总按类分桶。
+func firstMatchedKeyword(text string, keywords []string) string {
+	for _, keyword := range keywords {
+		if keyword != "" && strings.Contains(text, strings.ToLower(keyword)) {
+			return keyword
+		}
+	}
+	return ""
+}
+
+func parseClockMinute(value string) (int, bool) {
+	parts := strings.SplitN(strings.TrimSpace(value), ":", 2)
+	if len(parts) != 2 {
+		return 0, false
+	}
+	hour, err1 := strconv.Atoi(parts[0])
+	minute, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil || hour < 0 || hour > 23 || minute < 0 || minute > 59 {
+		return 0, false
+	}
+	return hour*60 + minute, true
+}
+
+// inClockWindow 判断 now 是否落在 [start, start+window) 的分钟窗口内，支持跨零点。
+func inClockWindow(now time.Time, start, window int) bool {
+	minutes := now.Hour()*60 + now.Minute()
+	end := start + window
+	if end <= 24*60 {
+		return minutes >= start && minutes < end
+	}
+	return minutes >= start || minutes < end-24*60
+}
+
+func jin10Location() *time.Location {
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		return time.FixedZone("CST", 8*60*60)
+	}
+	return loc
 }
 
 func (s *Jin10Source) fetchPage(ctx context.Context, maxTime string) ([]jin10Flash, error) {
@@ -312,11 +517,7 @@ func splitJin10Title(content string) (string, string) {
 }
 
 func parseJin10Time(value string) time.Time {
-	loc, err := time.LoadLocation("Asia/Shanghai")
-	if err != nil {
-		loc = time.FixedZone("CST", 8*60*60)
-	}
-	t, err := time.ParseInLocation("2006-01-02 15:04:05", strings.TrimSpace(value), loc)
+	t, err := time.ParseInLocation("2006-01-02 15:04:05", strings.TrimSpace(value), jin10Location())
 	if err != nil {
 		return time.Time{}
 	}

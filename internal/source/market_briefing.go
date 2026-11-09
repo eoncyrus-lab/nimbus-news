@@ -110,6 +110,8 @@ func (s *MarketBriefingSource) FetchContext(parent context.Context) ([]*model.Me
 		messages, err = s.fetchClosing(parent)
 	case "us_preview":
 		messages, err = s.fetchUSPreview(parent)
+	case "us_close":
+		messages, err = s.fetchUSClose(parent)
 	case "aggregate":
 		messages, err = s.fetchAggregate(parent)
 	default:
@@ -780,13 +782,7 @@ func (s *MarketBriefingSource) fetchAggregate(parent context.Context) ([]*model.
 // fedwatch + VIX + 关键标的行情 + AI 叙事
 
 func (s *MarketBriefingSource) fetchUSPreview(parent context.Context) ([]*model.Message, error) {
-	// 按美东日期判断美股休市日：北京周六 21:10 对应美东周五盘前（应推送），
-	// 北京周一 21:10 对应美东周日（应跳过），所以不能用本地星期的 trading_days_only。
-	ny, err := time.LoadLocation("America/New_York")
-	if err != nil {
-		ny = time.FixedZone("America/New_York", -5*60*60)
-	}
-	if wd := time.Now().In(ny).Weekday(); wd == time.Saturday || wd == time.Sunday {
+	if !usWeekday(time.Now()) {
 		return nil, nil
 	}
 	ctx, cancel := context.WithTimeout(parent, 4*time.Minute)
@@ -876,6 +872,98 @@ func (s *MarketBriefingSource) renderUSPreview(
 		b.WriteString(FormatLLMSection("🤖 AI 前瞻研判", narrative))
 	}
 	return b.String()
+}
+
+// ── us_close: 美盘收盘/夜盘复盘（美东 16:00 后）──
+// 收盘指数 + 盘后/夜盘期货与汇率 + VIX + AI 复盘。
+
+func (s *MarketBriefingSource) fetchUSClose(parent context.Context) ([]*model.Message, error) {
+	if !usWeekday(time.Now()) {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(parent, 3*time.Minute)
+	defer cancel()
+
+	indexLines := s.fetchQuotesBlock(ctx, []string{"^GSPC", "^IXIC", "^DJI", "^VIX"})
+	nightLines := s.fetchQuotesBlock(ctx, []string{"ES=F", "NQ=F", "GC=F", "CL=F", "BTC-USD", "USDCNH=X"})
+	narrative := s.usCloseNarrative(ctx, indexLines, nightLines)
+	if len(indexLines) == 0 && len(nightLines) == 0 && strings.TrimSpace(narrative) == "" {
+		return nil, nil
+	}
+
+	content := s.renderUSClose(indexLines, nightLines, narrative)
+	now := time.Now()
+	// 收盘简报在北京凌晨发出，标美东交易日才对得上"哪一天的收盘"。
+	ny := now.In(newYorkLocation())
+	msg := &model.Message{
+		Type:       model.TypeAnalysis,
+		ID:         fmt.Sprintf("us_close_%s", ny.Format("20060102")),
+		Title:      fmt.Sprintf("🌎 美盘收盘 · %s", ny.Format("01-02")),
+		Content:    content,
+		Source:     s.name,
+		SourceType: "market-briefing",
+		CreateTime: now,
+		FetchTime:  now,
+		Tags:       []string{"美股", "收盘", "夜盘", "复盘"},
+	}
+	msg.SetMetadata("display_source", "美盘收盘")
+	return []*model.Message{msg}, nil
+}
+
+func (s *MarketBriefingSource) renderUSClose(indexLines, nightLines []string, narrative string) string {
+	var b strings.Builder
+	b.WriteString("── 收盘指数 ──\n")
+	if len(indexLines) > 0 {
+		for _, line := range indexLines {
+			b.WriteString(line + "\n")
+		}
+	} else {
+		b.WriteString("暂无数据\n")
+	}
+	b.WriteString("\n── 夜盘与盘后 ──\n")
+	if len(nightLines) > 0 {
+		for _, line := range nightLines {
+			b.WriteString(line + "\n")
+		}
+	} else {
+		b.WriteString("暂无数据\n")
+	}
+	b.WriteString("注：个股盘后与 Blue Ocean 夜盘不在当前行情源覆盖内，\n")
+	b.WriteString("这里用 ES/NQ 期货与离岸人民币代理隔夜方向。\n")
+	if narrative != "" {
+		b.WriteString("\n")
+		b.WriteString(FormatLLMSection("🤖 AI 收盘复盘", narrative))
+	}
+	return b.String()
+}
+
+func (s *MarketBriefingSource) usCloseNarrative(ctx context.Context, indexLines, nightLines []string) string {
+	if s.llmProvider == nil {
+		return ""
+	}
+	var lines []string
+	lines = append(lines, "【收盘指数】")
+	lines = append(lines, indexLines...)
+	lines = append(lines, "【盘后/夜盘期货与汇率】")
+	lines = append(lines, nightLines...)
+	prompt := fmt.Sprintf(`你是资深美股收盘分析师，请基于以下数据做 250 字以内收盘复盘:
+
+%s
+
+要求:
+1) 指数与风格（科技/价值/防御）表现
+2) 盘后与夜盘期货指向，是否预示明日开盘方向
+3) VIX 与风险偏好
+4) 明日开盘需要关注的风险/事件
+5) 直接输出，不要前置寒暄。`, strings.Join(lines, "\n"))
+	return LLMSummarizeWithSource(ctx, s.llmProvider, s.name+"-us-close", prompt, "thinking", 50*time.Second)
+}
+
+// usWeekday 按美东日期判断是否美股交易日：北京周六对应美东周五（应推送），
+// 北京周一对应美东周日（应跳过），所以不能用本地星期。
+func usWeekday(now time.Time) bool {
+	wd := now.In(newYorkLocation()).Weekday()
+	return wd != time.Saturday && wd != time.Sunday
 }
 
 func (s *MarketBriefingSource) usPreviewNarrative(

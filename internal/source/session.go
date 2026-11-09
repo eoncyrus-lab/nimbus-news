@@ -21,10 +21,11 @@ func init() {
 const sessionDefaultMaxChars = 1800
 
 const (
-	sessionMorning = "morning" // A 股盘中多槽
-	sessionClose   = "close"   // A 股收盘
-	sessionUS      = "us"      // 美盘前瞻
-	sessionWeek    = "week"    // 周度版次（周日 20:00）
+	sessionMorning = "morning"  // A 股盘中多槽
+	sessionClose   = "close"    // A 股收盘
+	sessionUS      = "us"       // 美盘前瞻
+	sessionUSClose = "us_close" // 美盘收盘/夜盘复盘
+	sessionWeek    = "week"     // 周度版次（周日 20:00）
 )
 
 type sessionMember struct {
@@ -42,9 +43,10 @@ type SessionSource struct {
 	members         []sessionMember
 	digestSt        digest.Store
 	llmProv         llm.Provider
-	force           bool // 跳过交易日判断（手动 FetchOnly / 测试用）
-	maxChars        int  // 单条消息上限（字符数），超出按小节分段推送
-	titleFromMember bool // 用行情成员的内在标题（随竞价/开盘/午盘相位变化）
+	force           bool   // 跳过交易日判断（手动 FetchOnly / 测试用）
+	maxChars        int    // 单条消息上限（字符数），超出按小节分段推送
+	titleFromMember bool   // 用行情成员的内在标题（随竞价/开盘/午盘相位变化）
+	phase           string // 美盘相位：preopen/close，用美东时间门控冬夏令时
 }
 
 // NewSessionSource 创建时段简报源。members 里每一项用现有的源类型组装：
@@ -59,9 +61,9 @@ type SessionSource struct {
 func NewSessionSource(cfg Config) (Source, error) {
 	session, _ := cfg.Options["session"].(string)
 	switch session {
-	case sessionMorning, sessionClose, sessionUS, sessionWeek:
+	case sessionMorning, sessionClose, sessionUS, sessionUSClose, sessionWeek:
 	default:
-		return nil, fmt.Errorf("session: unknown session %q (want morning/close/us/week)", session)
+		return nil, fmt.Errorf("session: unknown session %q (want morning/close/us/us_close/week)", session)
 	}
 	s := &SessionSource{name: cfg.Name, session: session}
 	s.title, _ = cfg.Options["title"].(string)
@@ -70,6 +72,9 @@ func NewSessionSource(cfg Config) (Source, error) {
 	}
 	if fromMember, ok := cfg.Options["title_from_member"].(bool); ok {
 		s.titleFromMember = fromMember
+	}
+	if phase, ok := cfg.Options["phase"].(string); ok {
+		s.phase = strings.ToLower(strings.TrimSpace(phase))
 	}
 	s.maxChars = sessionDefaultMaxChars
 	if v, ok := cfg.Options["max_chars"].(int); ok && v >= 0 {
@@ -80,6 +85,7 @@ func NewSessionSource(cfg Config) (Source, error) {
 			sessionMorning: "🌅 盘前全景",
 			sessionClose:   "📊 A股收盘",
 			sessionUS:      "🌎 美盘前瞻",
+			sessionUSClose: "🌎 美盘收盘",
 			sessionWeek:    "🗓 周度版次",
 		}[session]
 	}
@@ -396,16 +402,39 @@ func (s *SessionSource) sessionActive(now time.Time) bool {
 	switch s.session {
 	case sessionMorning, sessionClose:
 		return IsAShareBroadlyActive(now)
-	case sessionUS:
-		ny, err := time.LoadLocation("America/New_York")
-		if err != nil {
-			ny = time.FixedZone("America/New_York", -5*60*60)
+	case sessionUS, sessionUSClose:
+		et := now.In(newYorkLocation())
+		if wd := et.Weekday(); wd == time.Saturday || wd == time.Sunday {
+			return false
 		}
-		wd := now.In(ny).Weekday()
-		return wd != time.Saturday && wd != time.Sunday
+		// 调度器只支持北京时间 HH:MM，所以同一相位排两个北京时间槽，
+		// 由美东实际时刻决定哪个槽生效（夏令时差 12h、冬令时差 13h）。
+		phase := s.phase
+		if s.session == sessionUSClose {
+			phase = "close"
+		}
+		minutes := et.Hour()*60 + et.Minute()
+		switch phase {
+		case "":
+			return true // 旧配置未写 phase，保持原行为
+		case "preopen":
+			return minutes >= 8*60+50 && minutes < 9*60+10
+		case "close":
+			return minutes >= 16*60 && minutes < 16*60+20
+		}
+		return false
 	case sessionWeek:
 		// 调度器只支持 HH:MM；周度版次每天 20:00 触发，只在周日真正产出。
 		return now.Weekday() == time.Sunday
 	}
 	return false
+}
+
+// newYorkLocation 统一美东时区；tzdata 缺失时退回固定 EST。
+func newYorkLocation() *time.Location {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		return time.FixedZone("America/New_York", -5*60*60)
+	}
+	return loc
 }

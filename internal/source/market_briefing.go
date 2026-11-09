@@ -279,7 +279,7 @@ func preMarketMeta(session string) preMarketSessionMeta {
 		}
 	case "after_hours":
 		return preMarketSessionMeta{
-			session: "after_hours", emoji: "🌃", titleLabel: "盘后竞价",
+			session: "after_hours", emoji: "🌃", titleLabel: "盘后",
 			sectionLabel: "实时行情", aiLabel: "AI 盘后点评",
 			aiRole: "A 股盘后分析师", aiMaxWords: "200",
 			triggers: false,

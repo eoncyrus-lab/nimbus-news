@@ -1,10 +1,12 @@
 package source
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -51,23 +53,35 @@ func RunScripts(ctx context.Context, specs []ScriptSpec) map[string]*ScriptResul
 
 			start := time.Now()
 			cmd := exec.CommandContext(runCtx, s.Cmd, s.Args...)
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
 			stdout, err := cmd.Output()
 			latency := time.Since(start)
 
 			res := &ScriptResult{Key: s.Key, Raw: stdout, Latency: latency}
 			status := "success"
 			if err != nil {
-				res.Err = fmt.Errorf("exec %s: %w", s.Key, err)
+				tail := lastLines(stderr.String(), 3, 400)
+				if tail != "" {
+					res.Err = fmt.Errorf("exec %s: %w: %s", s.Key, err, tail)
+				} else {
+					res.Err = fmt.Errorf("exec %s: %w", s.Key, err)
+				}
 				if runCtx.Err() == context.DeadlineExceeded {
 					status = "timeout"
 				} else {
 					status = "error"
 				}
 			} else if len(stdout) > 0 {
-				// 尝试 JSON 解析；若失败 Raw 仍可用
+				// 尝试 JSON 解析；部分脚本会在 JSON 前后打印 banner（如 baostock 的
+				// login/logout success），先严格解析，失败再截取最外层 JSON 片段。
+				// Python 的 json.dumps 默认允许 NaN/Infinity，Go 不接受，先归一化。
+				body := sanitizeJSONNumbers(stdout)
 				var raw json.RawMessage
-				if jerr := json.Unmarshal(stdout, &raw); jerr == nil {
+				if jerr := json.Unmarshal(body, &raw); jerr == nil {
 					res.Parsed = raw
+				} else if extracted := extractJSONObject(body); extracted != nil {
+					res.Parsed = extracted
 				} else {
 					res.Err = fmt.Errorf("parse json %s: %w", s.Key, jerr)
 					status = "error"
@@ -119,4 +133,132 @@ func SetSpecsSourceName(specs []ScriptSpec, sourceName string) []ScriptSpec {
 		specs[i].SourceName = sourceName
 	}
 	return specs
+}
+
+// extractJSONObject 从混杂 stdout 中截取最外层 JSON 对象/数组。
+// 脚本可能在 JSON 前后打印 banner，banner 里也可能带大括号；
+// 因此按括号配对（忽略字符串内的括号）收集候选，返回最后一个可解析的。
+func extractJSONObject(stdout []byte) json.RawMessage {
+	var best json.RawMessage
+	start, depth := -1, 0
+	inString, escaped := false, false
+	for i, b := range stdout {
+		if inString {
+			switch {
+			case escaped:
+				escaped = false
+			case b == '\\':
+				escaped = true
+			case b == '"':
+				inString = false
+			}
+			continue
+		}
+		switch b {
+		case '"':
+			if start >= 0 {
+				inString = true
+			}
+		case '{', '[':
+			if depth == 0 {
+				start = i
+			}
+			depth++
+		case '}', ']':
+			if depth == 0 {
+				continue
+			}
+			depth--
+			if depth == 0 && start >= 0 {
+				candidate := stdout[start : i+1]
+				var raw json.RawMessage
+				if err := json.Unmarshal(candidate, &raw); err == nil {
+					best = raw
+				}
+				start = -1
+			}
+		}
+	}
+	return best
+}
+
+// lastLines 取文本末尾若干行并限长，用于把脚本 stderr 的关键信息带进错误。
+func lastLines(text string, lines, maxChars int) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	parts := strings.Split(text, "\n")
+	if len(parts) > lines {
+		parts = parts[len(parts)-lines:]
+	}
+	out := strings.Join(parts, " | ")
+	runes := []rune(out)
+	if len(runes) > maxChars {
+		out = string(runes[len(runes)-maxChars:])
+	}
+	return out
+}
+
+// sanitizeJSONNumbers 把 Python 产出的 NaN / Infinity 字面量替换为 null。
+// 字符串内的同名文本保持不变。
+func sanitizeJSONNumbers(data []byte) []byte {
+	out := make([]byte, 0, len(data))
+	inString, escaped := false, false
+	for i := 0; i < len(data); {
+		b := data[i]
+		if inString {
+			out = append(out, b)
+			switch {
+			case escaped:
+				escaped = false
+			case b == '\\':
+				escaped = true
+			case b == '"':
+				inString = false
+			}
+			i++
+			continue
+		}
+		if b == '"' {
+			inString = true
+			out = append(out, b)
+			i++
+			continue
+		}
+		switch {
+		case hasTokenAt(data, i, "-Infinity"):
+			out = append(out, "null"...)
+			i += len("-Infinity")
+		case hasTokenAt(data, i, "Infinity"):
+			out = append(out, "null"...)
+			i += len("Infinity")
+		case hasTokenAt(data, i, "NaN"):
+			out = append(out, "null"...)
+			i += len("NaN")
+		default:
+			out = append(out, b)
+			i++
+		}
+	}
+	return out
+}
+
+// hasTokenAt 判断 token 是否从 i 开始，且前后都是非标识符边界。
+func hasTokenAt(data []byte, i int, token string) bool {
+	if i+len(token) > len(data) || string(data[i:i+len(token)]) != token {
+		return false
+	}
+	if i > 0 && isIdentByte(data[i-1]) {
+		return false
+	}
+	if i+len(token) < len(data) && isIdentByte(data[i+len(token)]) {
+		return false
+	}
+	return true
+}
+
+func isIdentByte(b byte) bool {
+	return b == '_' || b == '$' || (b >= '0' && b <= '9') ||
+		(b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
 }

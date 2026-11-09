@@ -11,6 +11,32 @@ from typing import Optional, Set
 import sys
 
 
+def install_network_timeouts(connect: float = 5, read: float = 15) -> None:
+    """给 requests/urllib3 注入默认超时。
+
+    上游（东财/新浪等）偶发挂起时，不设超时会一直阻塞，把收盘简报整段拖死。
+    已有显式 timeout 的调用保持不变。
+    """
+    import socket
+
+    socket.setdefaulttimeout(read)
+    try:
+        import requests.sessions as sessions
+    except ImportError:
+        return
+    original = sessions.Session.request
+    if getattr(original, "_nimbus_timeout", False):
+        return
+
+    def request(self, *args, **kwargs):
+        if kwargs.get("timeout") is None:
+            kwargs["timeout"] = (connect, read)
+        return original(self, *args, **kwargs)
+
+    setattr(request, "_nimbus_timeout", True)
+    setattr(sessions.Session, "request", request)
+
+
 class TradingCalendar:
     """交易日历管理器（带缓存）"""
 

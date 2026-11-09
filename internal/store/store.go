@@ -33,9 +33,10 @@ type BoltStore struct {
 const BoltSnapshotKind = "bolt"
 
 var expiringBuckets = map[string]struct{}{
-	"dedup":         {},
-	"source_state":  {},
-	"unified_dedup": {},
+	"dedup":               {},
+	"source_state":        {},
+	"unified_dedup":       {},
+	"channel_idempotency": {},
 }
 
 // SnapshotResult describes the exact bytes written by an owner-mediated snapshot.
@@ -85,6 +86,24 @@ func (s *BoltStore) Set(bucket, key string, ttl time.Duration) error {
 		expireTime := time.Now().Add(ttl)
 		return b.Put([]byte(key), timeToBytes(expireTime))
 	})
+}
+
+// Claim 原子占用一个键：键不存在或已过期时写入并返回 true，否则返回 false。
+// 用于跨进程重启的送达幂等，并发调用只有一个能占到。
+func (s *BoltStore) Claim(bucket, key string, ttl time.Duration) (bool, error) {
+	claimed := false
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		b, err := tx.CreateBucketIfNotExists([]byte(bucket))
+		if err != nil {
+			return err
+		}
+		if raw := b.Get([]byte(key)); raw != nil && bytesToTime(raw).After(time.Now()) {
+			return nil
+		}
+		claimed = true
+		return b.Put([]byte(key), timeToBytes(time.Now().Add(ttl)))
+	})
+	return claimed, err
 }
 
 // Delete 删除键

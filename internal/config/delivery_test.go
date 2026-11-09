@@ -192,7 +192,7 @@ func TestSourceOptionsRejectRedactionSentinelsAndCredentialArguments(t *testing.
 	}
 
 	safe := SourceConfig{Name: "safe", Type: "script", Options: map[string]interface{}{
-		"command": "python3 scripts/blockbeats_daily_reports.py --mode evening",
+		"command": "python3 scripts/econ_calendar.py --days 1",
 	}}
 	if _, err := NormalizeSourceConfig(safe); err != nil {
 		t.Fatalf("safe environment-backed command rejected: %v", err)
@@ -223,33 +223,34 @@ func TestProductionTypedRoutingUsesNarrowCriticalPolicies(t *testing.T) {
 			}
 		}
 	}
-	if externalRouted != 10 {
-		t.Fatalf("typed external sources=%d, want 10 (8 RSS + fed-speeches + eia-energy)", externalRouted)
+	if externalRouted != 8 {
+		t.Fatalf("typed external sources=%d, want 8 (7 RSS + wallstcn-hk)", externalRouted)
 	}
 
-	// 无 AI 模式：不做评分，也不设每日配额；每条新消息即时推送。
+	// 价值投资口径：即时直推有每日预算，溢出进 news_aggregate 摘要。
 	assertSourcePolicy(t, sources, "bwe-tradfi", 120, nil, nil,
 		false, AIPolicyBypass, RouteDefaultSilent, RouteDefaultDirect,
-		&routeBandExpectation{maxPerDay: 0, priority: 70}, nil)
+		&routeBandExpectation{maxPerDay: 3, priority: 70},
+		&routeBandExpectation{maxPerDay: 0, priority: 50, briefingTarget: "news_aggregate"})
 	assertSourcePolicy(t, sources, "bloomberg-markets", 300, nil, nil,
 		false, AIPolicyBypass, RouteDefaultSilent, RouteDefaultDigest, nil,
 		&routeBandExpectation{maxPerDay: 3, priority: 50, briefingTarget: "news_aggregate"})
 	assertSourcePolicy(t, sources, "bloomberg-economics", 300, nil, nil,
 		false, AIPolicyBypass, RouteDefaultSilent, RouteDefaultDigest, nil,
 		&routeBandExpectation{maxPerDay: 2, priority: 50, briefingTarget: "news_aggregate"})
-	assertSourcePolicy(t, sources, "bloomberg-politics", 300, nil, nil,
-		false, AIPolicyBypass, RouteDefaultSilent, RouteDefaultDirect,
-		&routeBandExpectation{maxPerDay: 0, priority: 60}, nil)
 	assertSourcePolicy(t, sources, "forexlive-breaking", 120, nil, nil,
 		false, AIPolicyBypass, RouteDefaultSilent, RouteDefaultDirect,
-		&routeBandExpectation{maxPerDay: 0, priority: 70}, nil)
-	// 高频快讯源：不设上限，每条即时推送。
-	assertSourcePolicy(t, sources, "walter-bloomberg", 180, nil, nil,
-		false, AIPolicyBypass, RouteDefaultSilent, RouteDefaultDirect,
-		&routeBandExpectation{maxPerDay: 0, priority: 75}, nil)
+		&routeBandExpectation{maxPerDay: 3, priority: 70},
+		&routeBandExpectation{maxPerDay: 0, priority: 50, briefingTarget: "news_aggregate"})
+	// 图表型分析独立直推（不限量）。
 	assertSourcePolicy(t, sources, "kobeissi-letter", 300, nil, nil,
 		false, AIPolicyBypass, RouteDefaultSilent, RouteDefaultDirect,
 		&routeBandExpectation{maxPerDay: 0, priority: 60}, nil)
+	// 中国/AH 中文覆盖：hk-stock 频道 min_score 2，直推预算 2/日。
+	assertSourcePolicy(t, sources, "wallstcn-hk", 180, nil, nil,
+		false, AIPolicyBypass, RouteDefaultSilent, RouteDefaultDirect,
+		&routeBandExpectation{maxPerDay: 2, priority: 70},
+		&routeBandExpectation{maxPerDay: 6, priority: 60, briefingTarget: "news_aggregate"})
 	assertSourcePolicy(t, sources, "fed-press", 900, nil, nil,
 		true, AIPolicyBypass, RouteDefaultSilent, RouteDefaultSilent,
 		&routeBandExpectation{maxPerDay: 0, priority: 100}, nil)
@@ -293,4 +294,3 @@ func assertRouteBand(t *testing.T, name string, got *RouteBand, want *routeBandE
 }
 
 func float64Ptr(value float64) *float64 { return &value }
-

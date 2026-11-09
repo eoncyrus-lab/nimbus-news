@@ -3,12 +3,16 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"reflect"
 	"strconv"
 	"strings"
@@ -37,6 +41,9 @@ type Server struct {
 	port             int
 	sourceMutationMu sync.Mutex
 	removeSource     func(string) error
+	runtimeRole      string
+	promoteRuntime   func() bool
+	storeSnapshotter func(w io.Writer) error
 }
 
 const (
@@ -82,6 +89,11 @@ func (s *Server) SetNewsEngine(e *core.NewsEngine) {
 func (s *Server) registerRoutes() {
 	// 公开端点（无需鉴权）
 	s.router.GET("/api/health", s.healthCheck)
+	// 进程级存活探针：部署回滚只看"进程起来了没有"。
+	// /api/health 是就绪探针，digest 积压时会返回 503，不能拿来判定版本好坏。
+	s.router.GET("/api/health/live", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok", "timestamp": time.Now().Format(time.RFC3339)})
+	})
 	s.router.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
 	api := s.router.Group("/api")
@@ -142,6 +154,9 @@ func (s *Server) registerRoutes() {
 
 	// 系统状态
 	api.GET("/status", s.getStatus)
+	api.POST("/store/snapshot", s.snapshotStore)
+	api.GET("/runtime", s.getRuntime)
+	api.POST("/runtime/promote", s.promoteRuntimeHandler)
 
 	// 调试：获取原始消息样例
 	api.GET("/debug/messages", s.getDebugMessages)
@@ -203,10 +218,32 @@ func adminSecurity(c *gin.Context) {
 		return
 	}
 
+	// 双实例/隧道场景下 RemoteAddr 永远是 127.0.0.1，loopback 不构成认证。
+	// 配置了 NIMBUS_ADMIN_TOKEN 后，除本机浏览器 UI（可信 Origin）外一律要求令牌。
+	if token := os.Getenv("NIMBUS_ADMIN_TOKEN"); token != "" && !adminTokenValid(c.Request, token) && origin == "" {
+		c.Header("WWW-Authenticate", `Bearer realm="nimbus-admin"`)
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "admin token required"})
+		return
+	}
+
 	writer := &sanitizingResponseWriter{ResponseWriter: c.Writer}
 	c.Writer = writer
 	defer writer.flush()
 	c.Next()
+}
+
+// adminTokenValid 接受 Authorization: Bearer 或 X-Admin-Token，常量时间比较。
+func adminTokenValid(r *http.Request, token string) bool {
+	provided := strings.TrimSpace(r.Header.Get("X-Admin-Token"))
+	if auth := r.Header.Get("Authorization"); auth != "" {
+		if len(auth) > 7 && strings.EqualFold(auth[:7], "bearer ") {
+			provided = strings.TrimSpace(auth[7:])
+		}
+	}
+	if provided == "" || len(provided) != len(token) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(provided), []byte(token)) == 1
 }
 
 func setCORSPreflightHeaders(c *gin.Context) {
@@ -219,7 +256,7 @@ func isAdminPath(path string) bool {
 	for _, prefix := range []string{
 		"/api/config", "/api/llm", "/api/channels", "/api/sources",
 		"/api/keys", "/api/discord", "/api/digest", "/api/debug",
-		"/api/status", "/api/schedule",
+		"/api/status", "/api/schedule", "/api/runtime",
 	} {
 		if path == prefix || strings.HasPrefix(path, prefix+"/") {
 			return true
@@ -746,10 +783,52 @@ func (s *Server) updateConfig(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	response := gin.H{
 		"message":      "config updated",
 		"lastModified": s.configManager.LastModified(),
-	})
+	}
+	if sections := restartRequiredSections(current, &cfg); len(sections) > 0 {
+		response["restart_required"] = sections
+		response["message"] = "config saved; restart required for: " + strings.Join(sections, ", ")
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+// restartRequiredSections 列出本次配置变更中"只写盘、需重启才生效"的段落。
+// LLM 由 HotSwapProvider 热切换、sources 走专用端点，都不算在内。
+func restartRequiredSections(current, next *config.PlatformConfig) []string {
+	if current == nil || next == nil {
+		return nil
+	}
+	var sections []string
+	if !reflect.DeepEqual(current.Channels, next.Channels) {
+		sections = append(sections, "channels")
+	}
+	if !reflect.DeepEqual(current.Market, next.Market) {
+		sections = append(sections, "market")
+	}
+	if !reflect.DeepEqual(current.Filters, next.Filters) {
+		sections = append(sections, "filters")
+	}
+	if !reflect.DeepEqual(current.Store, next.Store) {
+		sections = append(sections, "store")
+	}
+	if !reflect.DeepEqual(current.SourceHealth, next.SourceHealth) {
+		sections = append(sections, "source_health")
+	}
+	if !reflect.DeepEqual(current.Alert, next.Alert) {
+		sections = append(sections, "alert")
+	}
+	if !reflect.DeepEqual(current.Server, next.Server) {
+		sections = append(sections, "server")
+	}
+	if !reflect.DeepEqual(current.MirrorChannels, next.MirrorChannels) {
+		sections = append(sections, "mirror_channels")
+	}
+	if !reflect.DeepEqual(current.Runtime, next.Runtime) {
+		sections = append(sections, "runtime")
+	}
+	return sections
 }
 
 func (s *Server) reloadConfig(c *gin.Context) {
@@ -1704,7 +1783,8 @@ func (s *Server) updateFiltersConfig(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "filters config updated"})
+	// 过滤器链在启动时构建，运行时不重建：如实告知需要重启，不能声称已生效。
+	c.JSON(http.StatusOK, gin.H{"message": "filters config saved", "restart_required": []string{"filters"}})
 }
 
 func (s *Server) getAlertConfig(c *gin.Context) {
@@ -1724,7 +1804,7 @@ func (s *Server) updateAlertConfig(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "alert config updated"})
+	c.JSON(http.StatusOK, gin.H{"message": "alert config saved", "restart_required": []string{"alert"}})
 }
 
 func (s *Server) getHealthConfig(c *gin.Context) {
@@ -1744,7 +1824,7 @@ func (s *Server) updateHealthConfig(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "health config updated"})
+	c.JSON(http.StatusOK, gin.H{"message": "health config saved", "restart_required": []string{"source_health"}})
 }
 
 // configToCoreSourceConfig 将 API config 转为 engine config
@@ -1787,11 +1867,11 @@ func (s *Server) getReports(c *gin.Context) {
 
 	// 实际注册的报告源(2026-08-02:blockbeats-evening 并入 news-aggregate-*)
 	reportSources := map[string]bool{
-		"us-macro-report":       true,
-		"guanfu-score":          true,
-		"pre-market-briefing":   true,
-		"closing-briefing":      true,
-		"us-preview":            true,
+		"us-macro-report":        true,
+		"guanfu-score":           true,
+		"pre-market-briefing":    true,
+		"closing-briefing":       true,
+		"us-preview":             true,
 		"news-aggregate-morning": true,
 		"news-aggregate-evening": true,
 	}
@@ -1841,7 +1921,68 @@ func (s *Server) getReports(c *gin.Context) {
 	})
 }
 
+// SetRuntimeRole 记录本实例角色（active|standby|admin），用于只读/可写门禁。
+func (s *Server) SetRuntimeRole(role string) {
+	if role == "" {
+		role = config.RoleActive
+	}
+	s.runtimeRole = role
+}
+
+// SetStoreSnapshotter 注入 owner-mediated Bolt 快照；运行中复制 db 文件不可靠，
+// 备份必须走进程内一致性快照。
+func (s *Server) SetStoreSnapshotter(fn func(w io.Writer) error) { s.storeSnapshotter = fn }
+
+func (s *Server) snapshotStore(c *gin.Context) {
+	if s.storeSnapshotter == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "store snapshot not available"})
+		return
+	}
+	c.Header("Content-Type", "application/octet-stream")
+	c.Header("Content-Disposition", `attachment; filename="platform.db"`)
+	if err := s.storeSnapshotter(c.Writer); err != nil {
+		// 响应头已发出时无法再写 JSON；错误只记录，由调用方校验文件大小。
+		slog.Error("store snapshot failed", "error", err)
+	}
+}
+
+// SetPromoteFunc 注入"standby → active"的人工提升动作。
+func (s *Server) SetPromoteFunc(fn func() bool) { s.promoteRuntime = fn }
+
+func (s *Server) role() string {
+	if s.runtimeRole == "" {
+		return config.RoleActive
+	}
+	return s.runtimeRole
+}
+
+func (s *Server) getRuntime(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"role": s.role()})
+}
+
+// promoteRuntimeHandler 人工提升：只允许 standby；不自动选主，避免双活脑裂。
+func (s *Server) promoteRuntimeHandler(c *gin.Context) {
+	if s.promoteRuntime == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "runtime promotion unavailable"})
+		return
+	}
+	if s.role() != config.RoleStandby {
+		c.JSON(http.StatusConflict, gin.H{"error": "only a standby instance can be promoted", "role": s.role()})
+		return
+	}
+	if !s.promoteRuntime() {
+		c.JSON(http.StatusConflict, gin.H{"error": "promotion failed"})
+		return
+	}
+	s.runtimeRole = config.RoleActive
+	c.JSON(http.StatusOK, gin.H{"role": config.RoleActive})
+}
+
 func (s *Server) triggerSource(c *gin.Context) {
+	if s.role() != config.RoleActive {
+		c.JSON(http.StatusForbidden, gin.H{"error": "only the active instance may trigger sources", "role": s.role()})
+		return
+	}
 	name := c.Param("name")
 	if err := s.newsEngine.TriggerSource(name); err != nil {
 		status := http.StatusNotFound
@@ -1857,6 +1998,11 @@ func (s *Server) triggerSource(c *gin.Context) {
 // fetchSource 主动拉取源(同步,不推送),返回拉到的消息供查看。
 // 区别于 trigger(异步推送):fetch 只执行源 Fetch 并回传内容。
 func (s *Server) fetchSource(c *gin.Context) {
+	// standby 是纯只读常驻；admin 才允许手动 FetchOnly（只抓不发）。
+	if s.role() == config.RoleStandby {
+		c.JSON(http.StatusForbidden, gin.H{"error": "standby is read-only", "role": s.role()})
+		return
+	}
 	name := c.Param("name")
 	if s.newsEngine == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "news engine not available"})
@@ -1891,7 +2037,7 @@ func (s *Server) fetchSource(c *gin.Context) {
 	views := make([]messageView, 0, len(messages))
 	for _, m := range messages {
 		view := messageView{
-			Title:  m.Title,
+			Title:   m.Title,
 			Content: m.Content,
 			Link:    m.Link,
 			Source:  m.Source,

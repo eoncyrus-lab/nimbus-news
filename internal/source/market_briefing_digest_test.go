@@ -2,14 +2,12 @@ package source
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/Ricaardo/nimbus-os/datasources/nasdaq"
 	"github.com/Ricaardo/nimbus-os/news/internal/digest"
 	"github.com/Ricaardo/nimbus-os/news/internal/model"
 	"github.com/Ricaardo/nimbus-os/news/internal/store"
@@ -26,19 +24,6 @@ type topicBriefingDigestStore struct {
 	topicLimit  int
 	topicLease  *digest.Lease
 }
-
-type fixtureNasdaqClient struct {
-	events []nasdaq.Event
-	err    error
-	date   string
-}
-
-func (c *fixtureNasdaqClient) FetchCalendar(_ context.Context, date string) ([]nasdaq.Event, error) {
-	c.date = date
-	return c.events, c.err
-}
-
-func float64Pointer(value float64) *float64 { return &value }
 
 func (*briefingDigestStore) Enqueue(context.Context, string, digest.Briefing, *model.Message) error {
 	return nil
@@ -144,77 +129,6 @@ func TestMarketBriefingEmptyDigestLeavesBaseUntouched(t *testing.T) {
 	}
 }
 
-func TestUSPreviewNasdaqCalendarPartialResultsAndCaps(t *testing.T) {
-	client := &fixtureNasdaqClient{err: errors.New("dividends endpoint unavailable")}
-	for i := 0; i < 8; i++ {
-		client.events = append(client.events, nasdaq.Event{
-			Type: nasdaq.EventEarnings, Symbol: "US:E" + string(rune('A'+i)),
-			Session: nasdaq.SessionAfterMarket, EPS: float64Pointer(float64(i)),
-			Estimated:  true,
-			Provenance: "Nasdaq earnings calendar dates are algorithmic estimates and are not company-confirmed.",
-		})
-	}
-	client.events = append(client.events,
-		nasdaq.Event{Type: nasdaq.EventDividend, Symbol: "US:DIV", Amount: float64Pointer(0.25)},
-		nasdaq.Event{Type: nasdaq.EventDividend, Symbol: "US:ZERO", Amount: float64Pointer(0)},
-		nasdaq.Event{Type: nasdaq.EventSplit, Symbol: "US:SPLT", SplitRatio: &nasdaq.SplitRatio{Numerator: 3, Denominator: 2}},
-		nasdaq.Event{Type: nasdaq.EventSplit, Symbol: "US:NOOP", SplitRatio: &nasdaq.SplitRatio{Numerator: 1, Denominator: 1}},
-	)
-	src := &MarketBriefingSource{
-		name: "us-preview", briefingType: "us_preview",
-		nasdaqEnabled: true, nasdaqClient: client,
-	}
-	now := time.Date(2026, 7, 30, 13, 0, 0, 0, time.UTC)
-	got := src.fetchNasdaqCalendar(context.Background(), now)
-	if client.date != "2026-07-30" {
-		t.Fatalf("request date=%s", client.date)
-	}
-	if !strings.Contains(got, "美股事件日历") ||
-		!strings.Contains(got, "Estimated · Nasdaq earnings calendar dates are algorithmic estimates and are not company-confirmed.") {
-		t.Fatalf("missing estimated provenance: %s", got)
-	}
-	if strings.Count(got, "EPS预期") != 6 {
-		t.Fatalf("earnings cap not applied: %s", got)
-	}
-	if !strings.Contains(got, "除息: DIV $0.25") || strings.Contains(got, "ZERO") {
-		t.Fatalf("dividend significance filtering failed: %s", got)
-	}
-	if !strings.Contains(got, "拆股: SPLT 3:2") || strings.Contains(got, "NOOP") {
-		t.Fatalf("split significance filtering failed: %s", got)
-	}
-}
-
-func TestUSPreviewNasdaqCalendarGatingAndEmptyOmission(t *testing.T) {
-	client := &fixtureNasdaqClient{}
-	src := &MarketBriefingSource{
-		briefingType: "closing", nasdaqEnabled: true, nasdaqClient: client,
-	}
-	if got := src.fetchNasdaqCalendar(context.Background(), time.Now()); got != "" || client.date != "" {
-		t.Fatalf("non-US briefing fetched Nasdaq calendar: got=%q date=%q", got, client.date)
-	}
-	src.briefingType = "us_preview"
-	if got := src.fetchNasdaqCalendar(context.Background(), time.Now()); got != "" {
-		t.Fatalf("empty calendar rendered section: %q", got)
-	}
-}
-
-func TestUSPreviewMarksNasdaqCachedFallback(t *testing.T) {
-	cachedAt := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
-	got := renderNasdaqCalendar([]nasdaq.Event{{
-		Type:       nasdaq.EventEarnings,
-		Symbol:     "US:AAPL",
-		Estimated:  true,
-		Provenance: "estimated dates",
-		DataStatus: nasdaq.EndpointCachedFallback,
-		CachedAt:   &cachedAt,
-	}})
-	if !strings.Contains(got, "Cached fallback") ||
-		!strings.Contains(got, "同一交易日缓存") ||
-		!strings.Contains(got, "Estimated · estimated dates") {
-		t.Fatalf("cached fallback provenance missing: %s", got)
-	}
-}
-
 func TestMarketBriefingDigestOverflowRemainsPending(t *testing.T) {
 	owner, err := store.NewBoltStore(filepath.Join(t.TempDir(), "digest.db"))
 	if err != nil {
@@ -265,12 +179,9 @@ func TestAggregateLeasesNewsAggregateBucket(t *testing.T) {
 		}},
 	}}
 	src := &MarketBriefingSource{
-		name:           "news-aggregate-evening",
-		briefingType:   "aggregate",
-		blockbeatsMode: "evening",
-		pythonCmd:      "python3",
-		scriptsDir:     "/nonexistent-scripts", // 脚本快速失败,验证摘要独立产出
-		digestStore:    ds,
+		name:         "news-aggregate-evening",
+		briefingType: "aggregate",
+		digestStore:  ds,
 	}
 	messages, err := src.Fetch()
 	if err != nil {
@@ -297,12 +208,9 @@ func TestAggregateLeasesNewsAggregateBucket(t *testing.T) {
 // TestAggregateEmptyEverythingReturnsNoMessages 聚合源无摘要且脚本失败 → 不产出。
 func TestAggregateEmptyEverythingReturnsNoMessages(t *testing.T) {
 	src := &MarketBriefingSource{
-		name:           "news-aggregate-morning",
-		briefingType:   "aggregate",
-		blockbeatsMode: "morning",
-		pythonCmd:      "python3",
-		scriptsDir:     "/nonexistent-scripts",
-		digestStore:    &topicBriefingDigestStore{}, // 空租约
+		name:         "news-aggregate-morning",
+		briefingType: "aggregate",
+		digestStore:  &topicBriefingDigestStore{}, // 空租约
 	}
 	messages, err := src.Fetch()
 	if err != nil {

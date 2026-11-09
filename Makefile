@@ -1,190 +1,108 @@
 # ============================================
-# 投资信息平台 - 一键部署 Makefile
+# nimbus-news - 构建与运维命令
 # ============================================
-# 使用方式:
-#   make help      - 查看所有可用命令
-#   make deploy    - 一键部署（推荐）
-#   make dev       - 本地开发模式
+#   make help         查看所有命令
+#   make build-native 构建 ./bin/platform
+#   make install-mac  构建并注册 launchd（本机）
+#   make deploy-vps   同步配置并安装 VPS cron（本地运行）
 # ============================================
 
-.PHONY: help init deploy build up down logs logs-backend logs-frontend restart clean clean-all \
-        dev dev-backend dev-frontend status ps health backup restore update python-deps \
+.PHONY: help init build-native run test vet deploy-vps install-mac uninstall-mac \
+        backup restore python-deps dev-backend dev-frontend health smoke-longbridge
 
-# 默认目标
 .DEFAULT_GOAL := help
 
-# 颜色定义
 GREEN  := \033[0;32m
 YELLOW := \033[0;33m
 BLUE   := \033[0;34m
 RED    := \033[0;31m
-NC     := \033[0m # No Color
+NC     := \033[0m
 
-CONFIG ?= config.yaml
+CONFIG ?= config.platform.yaml
 ENV_FILE ?= .env
-BACKEND_API_URL ?= http://localhost:8081
-FRONTEND_URL ?= http://localhost:$${FRONTEND_PORT:-80}
+API_URL ?= http://127.0.0.1:8081
+ADMIN_AUTH := $(if $(NIMBUS_ADMIN_TOKEN),-H "Authorization: Bearer $(NIMBUS_ADMIN_TOKEN)")
 
-# ==========================================
-# 帮助信息
-# ==========================================
+BACKUP_DIR := ./backups
+TIMESTAMP := $(shell date +%Y%m%d_%H%M%S)
+
 help:
 	@echo ""
-	@echo "$(BLUE)============================================$(NC)"
-	@echo "$(BLUE)    投资信息平台 - 部署命令$(NC)"
-	@echo "$(BLUE)============================================$(NC)"
+	@echo "$(BLUE)nimbus-news - 构建与运维$(NC)"
 	@echo ""
-	@echo "$(GREEN)一键部署:$(NC)"
-	@echo "  make init          - 创建本地配置和环境变量文件"
-	@echo "  make deploy        - 完整部署（构建+启动）"
-	@echo "  make update        - 更新部署（拉取代码+重新构建）"
+	@echo "$(GREEN)构建:$(NC)"
+	@echo "  make init           - 从模板生成本地配置/环境变量"
+	@echo "  make build-native   - go build -o bin/platform ./cmd/platform"
+	@echo "  make test           - go test ./..."
+	@echo "  make vet            - go vet ./..."
 	@echo ""
-	@echo "$(GREEN)容器管理:$(NC)"
-	@echo "  make build         - 构建镜像"
-	@echo "  make up            - 启动服务"
-	@echo "  make down          - 停止服务"
-	@echo "  make restart       - 重启服务"
-	@echo "  make logs          - 查看日志"
-	@echo "  make status        - 查看服务状态"
-	@echo "  make health        - 健康检查"
+	@echo "$(GREEN)部署:$(NC)"
+	@echo "  make install-mac    - 构建并用 launchd 常驻本机（Mac 实例）"
+	@echo "  make uninstall-mac  - 卸载 launchd agent"
+	@echo "  make deploy-vps     - 同步配置 + 安装 VPS cron（本地运行）"
 	@echo ""
-	@echo "$(GREEN)本地开发:$(NC)"
-	@echo "  make dev           - 启动本地开发环境"
-	@echo "  make dev-backend   - 仅启动后端"
-	@echo "  make dev-frontend  - 仅启动前端"
-	@echo ""
-	@echo "$(GREEN)数据管理:$(NC)"
-	@echo "  make backup        - 备份数据"
-	@echo "  make restore       - 恢复数据"
-	@echo "  make clean         - 清理（保留数据）"
-	@echo "  make clean-all     - 完全清理（包括数据）"
+	@echo "$(GREEN)运维:$(NC)"
+	@echo "  make health         - 检查 /api/health/live 与就绪状态"
+	@echo "  make backup         - 用进程内一致性快照备份 Bolt 库"
+	@echo "  make restore FILE=  - 停服后恢复备份"
+	@echo "  make run            - 直接前台运行（调试用）"
 	@echo ""
 
-# ==========================================
-# 一键部署
-# ==========================================
 init:
-	@if [ ! -f "$(CONFIG)" ]; then cp config.yaml.example "$(CONFIG)"; echo "$(GREEN)✓ 已创建 $(CONFIG)$(NC)"; else echo "$(YELLOW)$(CONFIG) 已存在，跳过$(NC)"; fi
+	@if [ ! -f "$(CONFIG)" ]; then cp config.platform.yaml.example "$(CONFIG)"; echo "$(GREEN)✓ 已创建 $(CONFIG)$(NC)"; else echo "$(YELLOW)$(CONFIG) 已存在，跳过$(NC)"; fi
 	@if [ ! -f "$(ENV_FILE)" ]; then cp .env.example "$(ENV_FILE)"; echo "$(GREEN)✓ 已创建 $(ENV_FILE)$(NC)"; else echo "$(YELLOW)$(ENV_FILE) 已存在，跳过$(NC)"; fi
-	@mkdir -p data/cache data/index data/reports
+	@mkdir -p data
 
-deploy: init build up
-	@echo "$(GREEN)✓ 部署完成!$(NC)"
-	@echo ""
-	@echo "访问地址:"
-	@echo "  - 前端: $(FRONTEND_URL)"
-	@echo "  - API:  $(BACKEND_API_URL)/api"
-	@echo ""
-	@echo "查看日志: make logs"
-
-update:
-	@echo "$(BLUE)>>> 更新部署...$(NC)"
-	git pull
-	@$(MAKE) deploy
-
-# ==========================================
-# 容器管理
-# ==========================================
-build:
-	@echo "$(BLUE)>>> 构建镜像...$(NC)"
-	docker compose build
-
-# 原生二进制（现网 platform）。
 build-native:
 	@echo "$(BLUE)>>> go build platform...$(NC)"
 	go build -o bin/platform ./cmd/platform
 
-up:
-	@echo "$(BLUE)>>> 启动服务...$(NC)"
-	docker compose up -d
-	@echo "$(GREEN)✓ 服务已启动$(NC)"
+run:
+	go run ./cmd/platform -config "$(CONFIG)"
 
-down:
-	@echo "$(BLUE)>>> 停止服务...$(NC)"
-	docker compose down
-	@echo "$(GREEN)✓ 服务已停止$(NC)"
+test:
+	go test ./...
 
-restart:
-	@echo "$(BLUE)>>> 重启服务...$(NC)"
-	docker compose restart
-	@echo "$(GREEN)✓ 服务已重启$(NC)"
+vet:
+	go vet ./...
 
-logs:
-	docker compose logs -f
+install-mac: build-native
+	./deploy/install-launchd.sh
 
-logs-backend:
-	docker compose logs -f backend
+uninstall-mac:
+	./deploy/install-launchd.sh --uninstall
 
-logs-frontend:
-	docker compose logs -f frontend
-
-status:
-	@echo "$(BLUE)>>> 服务状态$(NC)"
-	docker compose ps
-
-ps: status
+deploy-vps:
+	./deploy/sync-vps.sh $(ARGS)
 
 health:
-	@echo "$(BLUE)>>> 健康检查$(NC)"
+	@echo "存活:"
+	@curl -sf -m 5 $(API_URL)/api/health/live || echo " $(RED)✗ 进程无响应$(NC)"
 	@echo ""
-	@echo "后端服务:"
-	@curl -s $(BACKEND_API_URL)/api/health && echo " $(GREEN)✓ 正常$(NC)" || echo " $(RED)✗ 异常$(NC)"
-	@echo ""
-	@echo "前端服务:"
-	@curl -s $(FRONTEND_URL)/health && echo " $(GREEN)✓ 正常$(NC)" || echo " $(RED)✗ 异常$(NC)"
+	@echo "就绪:"
+	@curl -s -m 5 $(API_URL)/api/health || true
 
-smoke-longbridge:
-	@echo "$(BLUE)>>> Longbridge 行情链路 smoke 检查$(NC)"
-	@bash scripts/longbridge_smoke.sh
-
-# ==========================================
-# 本地开发
-# ==========================================
-dev: dev-backend dev-frontend
-	@echo "$(GREEN)✓ 开发环境已启动$(NC)"
-	@echo "  - 后端: http://localhost:8081"
-	@echo "  - 前端: http://localhost:3000"
-
-dev-backend:
-	@echo "$(BLUE)>>> 启动后端开发服务...$(NC)"
-	@cd . && go run ./cmd/platform -config "$(CONFIG)" &
-
-dev-frontend:
-	@echo "$(BLUE)>>> 启动前端开发服务...$(NC)"
-	@cd web && npm run dev &
-
-# ==========================================
-# 数据管理
-# ==========================================
-BACKUP_DIR := ./backups
-TIMESTAMP := $(shell date +%Y%m%d_%H%M%S)
-
+# 运行中直接 tar db 文件可能拿到撕裂副本，必须走进程内快照接口。
 backup:
-	@echo "$(BLUE)>>> 备份数据...$(NC)"
 	@mkdir -p $(BACKUP_DIR)
-	@tar -czvf $(BACKUP_DIR)/data_$(TIMESTAMP).tar.gz data/
-	@echo "$(GREEN)✓ 备份完成: $(BACKUP_DIR)/data_$(TIMESTAMP).tar.gz$(NC)"
+	@curl -sf -m 60 $(ADMIN_AUTH) -X POST $(API_URL)/api/store/snapshot -o $(BACKUP_DIR)/platform_$(TIMESTAMP).db
+	@test -s $(BACKUP_DIR)/platform_$(TIMESTAMP).db && echo "$(GREEN)✓ 快照: $(BACKUP_DIR)/platform_$(TIMESTAMP).db$(NC)"
 
 restore:
-	@echo "$(BLUE)>>> 恢复数据...$(NC)"
-	@if [ -z "$(FILE)" ]; then \
-		echo "$(RED)请指定备份文件: make restore FILE=backups/data_xxx.tar.gz$(NC)"; \
-		exit 1; \
-	fi
-	@tar -xzvf $(FILE)
-	@echo "$(GREEN)✓ 数据已恢复$(NC)"
+	@if [ -z "$(FILE)" ]; then echo "$(RED)请指定备份文件: make restore FILE=backups/platform_xxx.db$(NC)"; exit 1; fi
+	@if pgrep -f "bin/platform" >/dev/null; then echo "$(RED)先停止平台进程再恢复$(NC)"; exit 1; fi
+	@cp "$(FILE)" data/platform.db
+	@echo "$(GREEN)✓ 已恢复 $(FILE)$(NC)"
 
 python-deps:
-	pip install -r scripts/requirements.txt
+	python3 -m venv .venv
+	./.venv/bin/pip install -r scripts/requirements.txt
 
-clean:
-	@echo "$(BLUE)>>> 清理容器和镜像...$(NC)"
-	docker compose down --rmi local
-	@echo "$(GREEN)✓ 清理完成（数据已保留）$(NC)"
+dev-backend:
+	go run ./cmd/platform -config "$(CONFIG)"
 
-clean-all:
-	@echo "$(YELLOW)警告: 这将删除所有数据!$(NC)"
-	@read -p "确认删除? [y/N] " confirm && [ "$$confirm" = "y" ] || exit 1
-	docker compose down -v --rmi local
-	rm -rf data
-	@echo "$(GREEN)✓ 完全清理完成$(NC)"
+dev-frontend:
+	@cd web && npm run dev
+
+smoke-longbridge:
+	@bash scripts/longbridge_smoke.sh

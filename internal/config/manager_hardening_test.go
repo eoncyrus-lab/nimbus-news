@@ -235,8 +235,8 @@ func TestProductionTopologyTemplateLoadsWithoutSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.Sources) != 19 || len(cfg.Channels) != 2 {
-		t.Fatalf("template topology sources=%d channels=%d (want 19 sources and 2 channels after Feishu/filefeed removal)", len(cfg.Sources), len(cfg.Channels))
+	if len(cfg.Sources) != 12 || len(cfg.Channels) != 2 {
+		t.Fatalf("template topology sources=%d channels=%d (want 12 sources and 2 channels after session consolidation)", len(cfg.Sources), len(cfg.Channels))
 	}
 	assertTemplateRuntimeSafety(t, cfg, "blockbeats-test-canary")
 	data, err := os.ReadFile(filepath.Join("..", "..", "config.platform.yaml.example"))
@@ -303,7 +303,6 @@ func TestProductionTopologyMatchesTemplateAndContainsNoInlineSecrets(t *testing.
 		assertTemplateSecretsUseEnvironment(t, raw, "")
 	}
 }
-
 
 func assertTemplateRuntimeSafety(t *testing.T, cfg *PlatformConfig, blockBeatsKey string) {
 	t.Helper()
@@ -443,5 +442,58 @@ func TestTemplateStringSecretDetection(t *testing.T) {
 				t.Fatalf("secret=%v, want %v", got, test.secret)
 			}
 		})
+	}
+}
+
+// R7：GET 配置会把密钥脱敏成 "***"，客户端原样 PUT 回来时必须拒绝，
+// 否则真实密钥会被字面量 "***" 覆盖，且 LLM 热切换会把 "***" 当新 key 装上。
+func TestMaskedValuesAreRejectedOnWrite(t *testing.T) {
+	t.Setenv("TEST_CONFIG_WEBHOOK", "https://secret.example/webhook")
+	t.Setenv("TEST_CONFIG_TOKEN", "secret-token")
+	t.Setenv("TEST_CONFIG_LLM_KEY", "secret-llm-key")
+	path := writeManagerFixture(t)
+	manager, err := NewConfigManager(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	llm := manager.Get().LLM
+	llm.APIKey = "***"
+	if err := manager.UpdateLLM(llm); err == nil {
+		t.Fatal("masked llm api key accepted")
+	}
+
+	channel := manager.Get().Channels[0]
+	channel.Webhook = "***"
+	if err := manager.UpdateChannel(channel.Name, channel); err == nil {
+		t.Fatal("masked webhook accepted")
+	}
+
+	source := manager.Get().Sources[0]
+	source.Options = map[string]interface{}{"api_key": "***"}
+	if err := manager.UpdateSource(source.Name, source); err == nil {
+		t.Fatal("masked source api_key accepted")
+	}
+
+	whole := *manager.Get()
+	whole.LLM.APIKey = "***"
+	if err := manager.Update(&whole); err == nil {
+		t.Fatal("masked key in full config update accepted")
+	}
+
+	if err := manager.UpdateKey("llm:api_key", "***"); err == nil {
+		t.Fatal("masked key via UpdateKey accepted")
+	}
+
+	// 被拒绝的写入不能落到内存或磁盘。
+	if got := manager.Get().LLM.APIKey; got != "secret-llm-key" {
+		t.Fatalf("live key=%q, want real key preserved", got)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), `api_key: "***"`) || strings.Contains(string(raw), "api_key: '***'") || strings.Contains(string(raw), `webhook: "***"`) {
+		t.Fatalf("masked value persisted to disk:\n%s", raw)
 	}
 }

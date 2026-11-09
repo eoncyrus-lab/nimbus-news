@@ -596,3 +596,61 @@ func TestNewsEngineStopCancelsHungDirectDispatchWithinBound(t *testing.T) {
 		t.Fatalf("Stop took %v", elapsed)
 	}
 }
+
+// R3 回归：同一消息当天已进 digest 车道时，direct 准入会命中既有记录并返回 Admitted=true，
+// 但 ClaimDirect 必然拿不到（Lane 不匹配）。必须按记录的真实 Lane 处理，不能静默丢弃。
+func TestTypedDirectAdmissionExistingDigestLaneKeepsDigest(t *testing.T) {
+	store := &typedRoutedStore{lookupAdmission: digest.RouteAdmission{
+		Admitted: true, Existing: true, Lane: digest.RouteDigest,
+	}}
+	engine := &NewsEngine{digestStore: store}
+	attachSuccessfulTypedRouter(engine)
+	routing := &config.SourceRoutingConfig{
+		AIPolicy: config.AIPolicyBypass, OnAIFailure: config.RouteDefaultSilent,
+		Default: config.RouteDefaultDirect,
+		Direct:  &config.RouteBand{MaxPerDay: 5, Priority: 20},
+		Digest:  &config.RouteBand{MaxPerDay: 5, Priority: 10, BriefingTarget: "news_aggregate"},
+	}
+	msg := &model.Message{ID: "cross-lane", Title: "headline", Metadata: map[string]interface{}{}}
+	if !engine.routeTypedMessages(context.Background(), "feed", newsSourceInfo{routing: routing, channels: []string{"main"}}, []*model.Message{msg}) {
+		t.Fatal("route failed")
+	}
+	if store.claimed {
+		t.Fatal("must not claim a direct record for a message admitted to digest lane")
+	}
+	if store.digestCalls != 0 {
+		t.Fatalf("digestCalls=%d, want 0 (record already exists in digest lane)", store.digestCalls)
+	}
+	if got := msg.GetStringMetadata("routing_lane"); got != string(digest.RouteDigest) {
+		t.Fatalf("lane metadata=%q, want digest", got)
+	}
+}
+
+// digest 准入命中既有 direct 记录时同理：按真实 Lane 标记，不再重复入 digest。
+func TestTypedDigestAdmissionExistingDirectLaneKeepsDirect(t *testing.T) {
+	store := &typedRoutedStore{}
+	engine := &NewsEngine{digestStore: store}
+	attachSuccessfulTypedRouter(engine)
+	engine.digestStore = &crossLaneDigestStore{typedRoutedStore: store}
+	routing := &config.SourceRoutingConfig{
+		AIPolicy: config.AIPolicyBypass, OnAIFailure: config.RouteDefaultSilent,
+		Default: config.RouteDefaultDigest,
+		Digest:  &config.RouteBand{MaxPerDay: 5, Priority: 10, BriefingTarget: "news_aggregate"},
+	}
+	msg := &model.Message{ID: "cross-lane-direct", Title: "headline", Metadata: map[string]interface{}{}}
+	if !engine.routeTypedMessages(context.Background(), "feed", newsSourceInfo{routing: routing, channels: []string{"main"}}, []*model.Message{msg}) {
+		t.Fatal("route failed")
+	}
+	if got := msg.GetStringMetadata("routing_lane"); got != string(digest.RouteDirect) {
+		t.Fatalf("lane metadata=%q, want direct", got)
+	}
+}
+
+type crossLaneDigestStore struct {
+	*typedRoutedStore
+}
+
+func (s *crossLaneDigestStore) EnqueueRoutedDigest(context.Context, digest.RouteRequest, *model.Message) (digest.RouteAdmission, error) {
+	s.digestCalls++
+	return digest.RouteAdmission{Admitted: true, Existing: true, Lane: digest.RouteDirect}, nil
+}

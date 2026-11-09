@@ -19,14 +19,14 @@ func TestValidateImageURL(t *testing.T) {
 		"https://cdn.example.com/a.png",
 	}
 	blocked := []string{
-		"http://fred.stlouisfed.org/a.png",      // 非 https
-		"https://127.0.0.1/a.png",               // 回环
-		"https://192.168.1.10/a.png",            // 私网
-		"https://10.0.0.5/a.png",                // 私网
-		"https://169.254.169.254/latest/meta",   // 链路本地(云 metadata)
-		"https://0.0.0.0/a.png",                 // 未指定
-		"ftp://example.com/a.png",               // 非 https
-		"https:///no-host.png",                  // 无 host
+		"http://fred.stlouisfed.org/a.png",    // 非 https
+		"https://127.0.0.1/a.png",             // 回环
+		"https://192.168.1.10/a.png",          // 私网
+		"https://10.0.0.5/a.png",              // 私网
+		"https://169.254.169.254/latest/meta", // 链路本地(云 metadata)
+		"https://0.0.0.0/a.png",               // 未指定
+		"ftp://example.com/a.png",             // 非 https
+		"https:///no-host.png",                // 无 host
 	}
 	for _, u := range ok {
 		if err := validateImageURL(u); err != nil {
@@ -79,7 +79,7 @@ func TestSendImageMessagePayload(t *testing.T) {
 		buf := make([]byte, r.ContentLength)
 		r.Body.Read(buf)
 		gotPayload = string(buf)
-		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"errcode":0,"errmsg":"ok"}`))
 	}))
 	defer srv.Close()
 
@@ -128,6 +128,19 @@ func TestBuildImagePayload(t *testing.T) {
 	// 空数据也要能编码(企微侧会拒绝,但编码本身不 panic)
 	if buildImageBase64(nil) != "" {
 		t.Fatalf("empty base64 should be empty")
+	}
+}
+
+// TestSendRequestReportsErrcode 企微失败也返回 HTTP 200，必须按 body 的 errcode 判错。
+func TestSendRequestReportsErrcode(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"errcode":40058,"errmsg":"invalid webhook url"}`))
+	}))
+	defer srv.Close()
+	w := &WechatChannel{webhook: srv.URL, httpClient: srv.Client()}
+	err := w.sendRequest(context.Background(), map[string]string{"msgtype": "text"})
+	if err == nil || !strings.Contains(err.Error(), "40058") {
+		t.Fatalf("errcode must surface as error, got %v", err)
 	}
 }
 

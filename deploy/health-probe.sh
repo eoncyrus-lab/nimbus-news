@@ -1,11 +1,13 @@
 #!/bin/bash
 # ============================================================
 # VPS 外部探活（cron 每 5 分钟，独立于平台进程）
-#   curl 平台 /api/health；连续 FAIL_THRESHOLD 次失败 → 企业微信告警。
+#   curl 平台 /api/health/live；连续 FAIL_THRESHOLD 次失败 → 企业微信告警。
 #   告警按"连续失败"去重：健康一次即清零计数，避免半夜刷屏。
 # ============================================================
 set -u
-HEALTH_URL="http://127.0.0.1:8081/api/health"
+# 只探进程存活：/api/health 带就绪语义（digest 积压会 503），
+# 拿它告警会把正常的积压当成宕机。
+HEALTH_URL="http://127.0.0.1:8081/api/health/live"
 FAIL_THRESHOLD=3
 STATE_FILE="/opt/news/logs/health-probe.state"
 PROBE_LOG="/opt/news/logs/health-probe.log"
@@ -44,7 +46,7 @@ echo "$(date '+%F %T') probe failed ($consecutive_failures consecutive)" >> "$PR
 if [ "$consecutive_failures" -ge "$FAIL_THRESHOLD" ] && [ -n "$WEBHOOK_URL" ]; then
   curl -sf -m 10 -X POST "$WEBHOOK_URL" \
     -H 'Content-Type: application/json' \
-    -d "{\"msgtype\":\"text\",\"text\":{\"content\":\"⚠️ news-platform 探活失败(连续 ${consecutive_failures} 次): http://127.0.0.1:8081/api/health 无响应 — ssh $HOSTNAME 检查 systemctl status news-platform\"}}" \
+    -d "{\"msgtype\":\"text\",\"text\":{\"content\":\"⚠️ news-platform 探活失败(连续 ${consecutive_failures} 次): http://127.0.0.1:8081/api/health/live 无响应 — ssh $HOSTNAME 检查 systemctl status news-platform\"}}" \
     >/dev/null 2>&1 && echo "$(date '+%F %T') alert sent" >> "$PROBE_LOG" \
     || echo "$(date '+%F %T') alert send failed" >> "$PROBE_LOG"
 fi

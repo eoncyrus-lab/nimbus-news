@@ -92,15 +92,16 @@ echo ">>> 安装 VPS 运维 cron..."
 $SSH "bash -s" <<'REMOTE'
 set -e
 REMOTE_DIR=/opt/news
-CRON_BACKUP='15 3 * * * cd /opt/news && tar czf backups/platform.$(date +\%Y\%m\%d).db.tgz data/platform.db && find backups -name "platform.*.db.tgz" -mtime +7 -delete'
+# 进程内一致性快照（不要 tar 正在写的 Bolt 文件）
+CRON_BACKUP='15 3 * * * sh -c "set -a; . /opt/news/.env; set +a; curl -sf -m 120 -H \"Authorization: Bearer $NIMBUS_ADMIN_TOKEN\" -X POST http://127.0.0.1:8081/api/store/snapshot -o /opt/news/backups/platform.$(date +\%Y\%m\%d).db" && find /opt/news/backups -name "platform.*.db" -mtime +7 -delete'
 CRON_PROBE='*/5 * * * * /opt/news/deploy/health-probe.sh >> /opt/news/logs/health-probe.log 2>&1'
 mkdir -p "$REMOTE_DIR/backups"
 # 去重后写回（保留既有自定义条目）
-(crontab -l 2>/dev/null | grep -v -e 'news/platform.db' -e 'health-probe.sh' || true
+(crontab -l 2>/dev/null | grep -v -e 'news/platform.db' -e 'store/snapshot' -e 'health-probe.sh' || true
  echo "$CRON_BACKUP"
  echo "$CRON_PROBE") | crontab -
 echo "crontab installed:"
-crontab -l | grep -E 'platform.db|health-probe'
+crontab -l | grep -E 'store/snapshot|health-probe'
 REMOTE
 
 # ---------- 5. VPS 获取二进制 + 校验 + 重启 ----------

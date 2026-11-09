@@ -7,7 +7,20 @@ import (
 )
 
 // PlatformConfig 统一平台配置
+// 运行角色：active 唯一摄入/推送；standby 只读常驻；admin 只读 + 手动 FetchOnly。
+const (
+	RoleActive  = "active"
+	RoleStandby = "standby"
+	RoleAdmin   = "admin"
+)
+
+// RuntimeConfig 运行形态配置
+type RuntimeConfig struct {
+	Role string `yaml:"role"` // active|standby|admin，空值等价 active
+}
+
 type PlatformConfig struct {
+	Runtime      RuntimeConfig       `yaml:"runtime"`
 	Server       ServerConfig        `yaml:"server"`
 	Channels     []ChannelConfig     `yaml:"channels"`
 	Sources      []SourceConfig      `yaml:"sources"`
@@ -17,7 +30,6 @@ type PlatformConfig struct {
 	Store        PlatformStoreConfig `yaml:"store"`
 	SourceHealth SourceHealthConfig  `yaml:"source_health"`
 	Alert        AlertConfig         `yaml:"alert"`
-	Investor     InvestorConfig      `yaml:"investor"`
 
 	// MirrorChannels 把所有通过过滤的新闻额外镜像到这些渠道（全量副本）。
 	// 等价于给每个源的 channels 追加这些渠道。
@@ -163,6 +175,11 @@ func LoadPlatform(path string) (*PlatformConfig, error) {
 
 // Validate checks invariants that must hold for both file reloads and API updates.
 func (c *PlatformConfig) Validate() error {
+	switch c.Runtime.Role {
+	case "", RoleActive, RoleStandby, RoleAdmin:
+	default:
+		return fmt.Errorf("runtime.role must be one of active/standby/admin, got %q", c.Runtime.Role)
+	}
 	if c.Store.News.MaxItems <= 0 || c.Store.News.MaxItems > maxNewsStoreMaxItems {
 		return fmt.Errorf("store.news.max_items must be between 1 and %d", maxNewsStoreMaxItems)
 	}
@@ -187,6 +204,9 @@ func (c *PlatformConfig) Validate() error {
 
 // setDefaults 设置默认值
 func (c *PlatformConfig) setDefaults() {
+	if c.Runtime.Role == "" {
+		c.Runtime.Role = RoleActive
+	}
 	if c.Server.Port == 0 {
 		c.Server.Port = 8080
 	}

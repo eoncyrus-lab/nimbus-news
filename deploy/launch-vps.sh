@@ -6,7 +6,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 # 前置 venv python，让所有 script 源 subprocess 调用的 python3 解析到带依赖的解释器
-export PATH="$ROOT/venv/bin:$PATH"
+if [ -d "$ROOT/.venv/bin" ]; then
+    export PATH="$ROOT/.venv/bin:$PATH"
+elif [ -d "$ROOT/venv/bin" ]; then
+    export PATH="$ROOT/venv/bin:$PATH"
+fi
 
 # 加载 .env 中的所有环境变量
 if [ -f .env ]; then

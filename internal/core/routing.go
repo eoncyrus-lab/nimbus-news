@@ -58,6 +58,13 @@ func (e *NewsEngine) routeTypedMessages(ctx context.Context, sourceName string, 
 				slog.Error("direct route admission failed", "source", sourceName, "error", err)
 				return false
 			}
+			if admission.Admitted && admission.Existing && admission.Lane != digest.RouteDirect {
+				// 同一条消息当天已进 digest 车道：direct 准入只是命中了既有记录，
+				// 再 ClaimDirect 必然拿不到（记录 Lane 不匹配），消息会静默丢掉。
+				// 保持既有车道，交给 digest 批次投递。
+				msg.SetMetadata("routing_lane", string(admission.Lane))
+				continue
+			}
 			if !admission.Admitted {
 				if digestBandEligible(info.routing.Digest, decision.eval) || bypassDigestFallback(info.routing) {
 					decision.lane = digest.RouteDigest
@@ -230,6 +237,11 @@ func (e *NewsEngine) admitTypedDigest(ctx context.Context, routedStore digest.Ro
 	if err != nil {
 		slog.Error("digest route admission failed", "source", sourceName, "error", err)
 		return false
+	}
+	if admission.Admitted && admission.Existing && admission.Lane != digest.RouteDigest {
+		// 既有 direct 记录：按记录的真实车道处理，不能假装已进 digest。
+		msg.SetMetadata("routing_lane", string(admission.Lane))
+		return true
 	}
 	if !admission.Admitted {
 		msg.SetMetadata("routing_lane", string(digest.RouteSilent))

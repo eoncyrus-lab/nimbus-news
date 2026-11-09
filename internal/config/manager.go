@@ -25,6 +25,52 @@ type ConfigManager struct {
 	fingerprint  string
 }
 
+// ErrMaskedValue 表示调用方把 GET 返回的脱敏占位符("***")原样写回了配置。
+// 一旦落盘，真实密钥会被覆盖成字面量 "***"，LLM/渠道/数据源随即全部失效。
+var ErrMaskedValue = errors.New("masked value \"***\" cannot be written back; submit the real value or omit the field")
+
+// validateNoMaskedValue 递归检查配置中的任何字符串字段，拒绝写入脱敏占位符。
+func validateNoMaskedValue(value interface{}) error {
+	if containsMaskedValue(reflect.ValueOf(value)) {
+		return ErrMaskedValue
+	}
+	return nil
+}
+
+func containsMaskedValue(v reflect.Value) bool {
+	if !v.IsValid() {
+		return false
+	}
+	switch v.Kind() {
+	case reflect.String:
+		return v.String() == "***"
+	case reflect.Interface, reflect.Ptr:
+		if v.IsNil() {
+			return false
+		}
+		return containsMaskedValue(v.Elem())
+	case reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			if containsMaskedValue(v.Field(i)) {
+				return true
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < v.Len(); i++ {
+			if containsMaskedValue(v.Index(i)) {
+				return true
+			}
+		}
+	case reflect.Map:
+		for _, key := range v.MapKeys() {
+			if containsMaskedValue(v.MapIndex(key)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // ConfigSubscriber 配置变更订阅者
 type ConfigSubscriber func(oldCfg, newCfg *PlatformConfig)
 
@@ -152,6 +198,9 @@ func (m *ConfigManager) Update(cfg *PlatformConfig) error {
 	if err != nil {
 		return err
 	}
+	if err := validateNoMaskedValue(next); err != nil {
+		return &ValidationError{Err: err}
+	}
 	if err := NormalizePlatformConfig(next); err != nil {
 		return err
 	}
@@ -184,6 +233,9 @@ func NormalizePlatformConfig(cfg *PlatformConfig) error {
 
 // UpdateChannel 更新单个渠道配置
 func (m *ConfigManager) UpdateChannel(name string, channelCfg ChannelConfig) error {
+	if err := validateNoMaskedValue(channelCfg); err != nil {
+		return &ValidationError{Err: err}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -252,6 +304,9 @@ func (m *ConfigManager) UpdateSource(name string, sourceCfg SourceConfig) error 
 	if err != nil {
 		return err
 	}
+	if err := validateNoMaskedValue(sourceCfg); err != nil {
+		return &ValidationError{Err: err}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -299,6 +354,9 @@ func (m *ConfigManager) UpdateSourceWithRuntime(
 	sourceCfg, err = NormalizeSourceConfig(sourceCfg)
 	if err != nil {
 		return err
+	}
+	if err := validateNoMaskedValue(sourceCfg); err != nil {
+		return &ValidationError{Err: err}
 	}
 
 	m.mu.Lock()
@@ -749,6 +807,9 @@ func (m *ConfigManager) CommitPreview(cfg *PlatformConfig, revision uint64) erro
 // UpdateKey 根据 key ID 更新单个密钥值并持久化
 // ID 格式: "llm:api_key", "source:<name>:api_key", "channel:<name>:webhook", "channel:<name>:<opt_key>"
 func (m *ConfigManager) UpdateKey(id, value string) error {
+	if value == "***" {
+		return &ValidationError{Err: ErrMaskedValue}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -820,6 +881,9 @@ func (m *ConfigManager) UpdateKey(id, value string) error {
 
 // UpdateLLM 更新 LLM 配置并持久化
 func (m *ConfigManager) UpdateLLM(llmCfg LLMConfig) error {
+	if err := validateNoMaskedValue(llmCfg); err != nil {
+		return &ValidationError{Err: err}
+	}
 	m.mu.Lock()
 	next, err := clonePlatformConfig(m.config)
 	if err != nil {
@@ -841,6 +905,9 @@ func (m *ConfigManager) UpdateLLM(llmCfg LLMConfig) error {
 
 // AddChannel 新增渠道并持久化
 func (m *ConfigManager) AddChannel(chCfg ChannelConfig) error {
+	if err := validateNoMaskedValue(chCfg); err != nil {
+		return &ValidationError{Err: err}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

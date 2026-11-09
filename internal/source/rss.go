@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -33,6 +34,8 @@ const defaultRSSMaxResponseBytes int64 = 4 << 20
 
 // send_images 的取图参数。只取每条消息的首图：WeChat 每张图都是一条独立消息，
 // 一次推多张会刷屏。
+const maxRSSItemsPerFetch = 50
+
 const (
 	imageFetchWorkers    = 5
 	imageFetchTimeout    = 15 * time.Second
@@ -460,10 +463,26 @@ func (r *RSSSource) Fetch() ([]*model.Message, error) {
 		return nil, fmt.Errorf("parse RSS data failed: %w", err)
 	}
 
+	// 按发布时间倒序处理：源侧条数上限只是为了挡住异常大的 feed，
+	// 不能因为前几条刚好是已推送过的旧条目就漏掉后面的新条目（去重在下游做，
+	// 这里看不到"已推送"状态，所以上限要取宽，且必须先按时间排序）。
+	sort.SliceStable(rss.Items, func(i, j int) bool {
+		ti, ei := parseRSSTime(rss.Items[i].PubDate)
+		tj, ej := parseRSSTime(rss.Items[j].PubDate)
+		vi, vj := ei == nil && !ti.IsZero(), ej == nil && !tj.IsZero()
+		if vi != vj {
+			return vi // 能解析出时间的排在前面
+		}
+		if !vi {
+			return false
+		}
+		return ti.After(tj)
+	})
+
 	var messages []*model.Message
 	acceptedCount := 0
 	for _, item := range rss.Items {
-		if acceptedCount >= 10 {
+		if acceptedCount >= maxRSSItemsPerFetch {
 			break
 		}
 
@@ -932,6 +951,14 @@ func determineDisplaySource(url, author string) string {
 		return "BWE TradFi"
 	case strings.Contains(url, "TheKobeissiLetter"):
 		return "The Kobeissi Letter"
+	case strings.Contains(url, "bloomberg.com/feeds/markets"):
+		return "Bloomberg 市场"
+	case strings.Contains(url, "bloomberg.com/feeds/economics"):
+		return "Bloomberg 经济"
+	case strings.Contains(url, "bloomberg.com/feeds"):
+		return "Bloomberg"
+	case strings.Contains(url, "investinglive.com"):
+		return "ForexLive"
 	case strings.Contains(url, "news.google.com"):
 		return "Google News"
 	default:

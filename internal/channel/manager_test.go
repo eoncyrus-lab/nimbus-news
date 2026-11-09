@@ -72,3 +72,97 @@ func TestSendToPropagatesFailureAndMissingChannel(t *testing.T) {
 		t.Fatal("missing channel accepted")
 	}
 }
+
+type countingIdempotentChannel struct {
+	managerTestChannel
+	sent atomic.Int32
+	err  error
+}
+
+func (c *countingIdempotentChannel) Send(context.Context, *model.Message) error {
+	c.sent.Add(1)
+	return c.err
+}
+
+type memoryIdempotencyStore struct {
+	keys map[string]time.Time
+}
+
+func (m *memoryIdempotencyStore) Exists(_, key string) (bool, error) {
+	expire, ok := m.keys[key]
+	return ok && expire.After(time.Now()), nil
+}
+func (m *memoryIdempotencyStore) Set(_, key string, ttl time.Duration) error {
+	m.keys[key] = time.Now().Add(ttl)
+	return nil
+}
+func (m *memoryIdempotencyStore) Delete(_, key string) error {
+	delete(m.keys, key)
+	return nil
+}
+
+func TestSendToIdempotentSkipsAlreadyDeliveredKey(t *testing.T) {
+	var active, maxActive atomic.Int32
+	ch := &countingIdempotentChannel{managerTestChannel: *newManagerTestChannel("main", nil, &active, &maxActive)}
+	manager := NewManager()
+	manager.Add(ch)
+	manager.SetIdempotencyStore(&memoryIdempotencyStore{keys: map[string]time.Time{}})
+
+	msg := &model.Message{ID: "m1", Content: "digest"}
+	if err := manager.SendToIdempotent(context.Background(), msg, "main", "digest:d1:main"); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.SendToIdempotent(context.Background(), msg, "main", "digest:d1:main"); err != nil {
+		t.Fatal(err)
+	}
+	if got := ch.sent.Load(); got != 1 {
+		t.Fatalf("sent=%d, want 1 (second call must be deduplicated)", got)
+	}
+}
+
+func TestSendToIdempotentReleasesKeyOnFailure(t *testing.T) {
+	var active, maxActive atomic.Int32
+	ch := &countingIdempotentChannel{managerTestChannel: *newManagerTestChannel("main", nil, &active, &maxActive)}
+	sendErr := errors.New("webhook down")
+	ch.err = sendErr
+	manager := NewManager()
+	manager.Add(ch)
+	manager.SetIdempotencyStore(&memoryIdempotencyStore{keys: map[string]time.Time{}})
+
+	msg := &model.Message{ID: "m1"}
+	if err := manager.SendToIdempotent(context.Background(), msg, "main", "digest:d2:main"); !errors.Is(err, sendErr) {
+		t.Fatalf("err=%v", err)
+	}
+	ch.err = nil
+	if err := manager.SendToIdempotent(context.Background(), msg, "main", "digest:d2:main"); err != nil {
+		t.Fatalf("retry after failure must be allowed, err=%v", err)
+	}
+	if got := ch.sent.Load(); got != 2 {
+		t.Fatalf("sent=%d, want 2", got)
+	}
+}
+
+// R9：直推失败要能精确指出失败的渠道，补推队列只重投这几个，不能整条重发。
+func TestBroadcastDetailedReportsFailedChannelsOnly(t *testing.T) {
+	var active, maxActive atomic.Int32
+	sendErr := errors.New("webhook down")
+	manager := NewManager()
+	manager.Add(newManagerTestChannel("good", nil, &active, &maxActive))
+	manager.Add(newManagerTestChannel("bad", sendErr, &active, &maxActive))
+	manager.Add(newManagerTestChannel("bad2", sendErr, &active, &maxActive))
+
+	failed, err := manager.BroadcastDetailed(context.Background(), &model.Message{ID: "m"}, []string{"good", "bad", "bad2", "missing"})
+	if !errors.Is(err, sendErr) {
+		t.Fatalf("err=%v", err)
+	}
+	if len(failed) != 2 || failed[0] == "" {
+		t.Fatalf("failed=%v, want exactly bad and bad2", failed)
+	}
+	seen := map[string]bool{}
+	for _, name := range failed {
+		seen[name] = true
+	}
+	if !seen["bad"] || !seen["bad2"] || seen["good"] {
+		t.Fatalf("failed=%v", failed)
+	}
+}

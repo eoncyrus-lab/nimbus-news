@@ -13,14 +13,13 @@ import (
 )
 
 func main() {
-	configPath := flag.String("config", "config.yaml", "config file path")
+	configPath := flag.String("config", "config.platform.yaml", "config file path")
 	apiPort := flag.Int("api-port", 8081, "API server port")
 	flag.Parse()
 
 	app, err := platformapp.New(platformapp.Options{
-		ConfigPath:       *configPath,
-		ListenAddr:       fmt.Sprintf("127.0.0.1:%d", *apiPort),
-		BootstrapClosing: true,
+		ConfigPath: *configPath,
+		ListenAddr: fmt.Sprintf("127.0.0.1:%d", *apiPort),
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "platform: %v\n", err)

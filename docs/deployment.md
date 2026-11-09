@@ -45,15 +45,83 @@ deploy key（nimbus-news / nimbus-os 各一），经 `~/.ssh/config` 的
 
 ## Mac（launchd，standby）
 
+Mac 是常驻**只读实例**：不摄入、不投递、不生成简报，只提供 `/api/health` 与只读 API，
+用于本机调试，以及 VPS 故障时临时 `promote` 接管。配置与 VPS 分开：
+Mac 用 `config.platform.yaml`，VPS 用 `config.platform.vps.yaml`。
+
+### 前置
+
+- macOS + Go 1.26+（`go version`）
+- Python 3.12（推荐）。`make python-deps PYTHON=python3.12` 可指定解释器；
+  默认 `python3` 若版本过新，`ecocal` 等包可能没有预编译 wheel
+- 仓库路径固定：plist 渲染时会写入绝对路径，移动仓库后必须重新 `make install-mac`
+
+### 首次部署
+
 ```bash
-make install-mac          # 构建 + 渲染 plist + bootstrap
-make uninstall-mac        # 卸载
+cd ~/nimbus-news
+make mac-bootstrap          # 生成 config/.env → 建 .venv 装依赖 → 构建 → 注册 launchd
+$EDITOR .env                # 填 webhook/API key；角色默认 standby，通常不用改
+make mac-status             # 看 launchd 状态 + /api/health/live + /api/health
 ```
 
-plist 由 `deploy/com.news.platform.plist.template` 渲染（`__ROOT__`/`__HOME__` 占位），
-`deploy/launch-mac.sh` 负责加载 `.env`、前置 venv、固定 `TZ=Asia/Shanghai`。
+`make mac-bootstrap` 等价于 `make init` + `make python-deps` + `make install-mac`，
+已有 `config.platform.yaml`、`.env` 不会被覆盖，可以重复执行。
 
-离线备份：`deploy/mac-backup.sh` 通过 ssh 让 VPS 现场生成快照再取回，保留 7 份。
+### 日常更新
+
+```bash
+git pull
+make install-mac            # 构建 + 重新渲染 plist + 重启
+```
+
+只改了 `.env` 或 `config.platform.yaml`，不需要重新构建：
+
+```bash
+make mac-restart
+```
+
+### 命令
+
+| 命令 | 作用 |
+|---|---|
+| `make mac-bootstrap` | 首次部署：配置模板 + Python 依赖 + 构建 + 注册 launchd |
+| `make install-mac` | 日常更新：构建 + 重载 launchd |
+| `make mac-restart` | 不构建，只 `kickstart -k` 重启 |
+| `make mac-status` | launchd 状态、`/api/health/live`、`/api/health` |
+| `make mac-logs` | `tail -f ~/Library/Logs/news-platform.{out,err}.log` |
+| `make uninstall-mac` | 卸载 launchd agent |
+
+### 角色与配置
+
+- `deploy/launch-mac.sh` 在 `.env` 未设置 `NIMBUS_RUNTIME_ROLE` 时注入 `standby`，
+  避免 Mac 与 VPS 双活；要改 `admin`/`active` 就写进 `.env` 后 `make mac-restart`。
+- 临时接管：`curl -X POST 127.0.0.1:8081/api/runtime/promote`
+  （配置了 `NIMBUS_ADMIN_TOKEN` 时带 `Authorization: Bearer <token>`）；
+  重启后回到 `.env` 里的角色。
+- `NIMBUS_CONFIG` 可覆盖启动配置文件名，默认 `config.platform.yaml`。
+
+### 日志与排障
+
+日志在 `~/Library/Logs/news-platform.out.log` 和 `.err.log`。launchd 的 `KeepAlive`
+会在进程退出 15 秒后自动拉起。
+
+```bash
+launchctl print gui/$(id -u)/com.news.platform   # 最近退出码/pid
+lsof -nP -iTCP:8081 -sTCP:LISTEN                 # 端口占用
+```
+
+常见问题：
+
+- `缺少 bin/platform` → `make build-native`
+- `缺少 config.platform.yaml` → `make init`
+- 脚本源报 `ModuleNotFoundError` → `make python-deps`
+- 健康检查一直失败 → 先看 `.err.log`；A 股收盘等脚本源首次运行可能较慢
+- 仓库搬家后服务起不来 → plist 里是旧绝对路径，重新 `make install-mac`
+
+### 离线备份
+
+`deploy/mac-backup.sh` 通过 ssh 让 VPS 现场生成快照再取回，保留 7 份。
 建议加入本机 crontab：
 
 ```cron
@@ -91,30 +159,16 @@ journalctl -u news-platform -e           # systemd 侧日志
 crontab -l                               # 三条 cron（构建/备份/探活）
 ```
 
-## Mac（launchd，standby）
-
-```bash
-make install-mac          # 构建 + 渲染 plist + bootstrap
-make uninstall-mac        # 卸载
-```
-
-plist 由 `deploy/com.news.platform.plist.template` 渲染（`__ROOT__`/`__HOME__` 占位），
-`deploy/launch-mac.sh` 负责加载 `.env`、前置 venv、固定 `TZ=Asia/Shanghai`。
-
-离线备份：`deploy/mac-backup.sh` 通过 ssh 让 VPS 现场生成快照再取回，保留 7 份。
-建议加入本机 crontab：
-
-```cron
-30 3 * * * /path/to/repo/deploy/mac-backup.sh >> ~/Library/Logs/news-backup.log 2>&1
-```
-
 ## 配置
 
-- 运行配置唯一入口：`config.platform.vps.yaml`（渠道、源调度、脚本源参数）
-- 密钥在 `.env`，`launch-vps.sh` 启动时 source 进环境；脚本源 subprocess 同样继承
-- 模板：`config.platform.vps.yaml.example`（渠道默认关闭）
-- 常用密钥：`WECHAT_WEBHOOK_URL`（企业微信，探活告警同用）、`DISCORD_PUSH_WEBHOOK`、
-  `FINNHUB_API_KEY`（earnings-calendar）、`FRED_API_KEY`（宏观报告）、LLM key
+- VPS 运行配置：`config.platform.vps.yaml`；Mac 运行配置：`config.platform.yaml`
+  （渠道、源调度、脚本源参数；两者都 gitignored）
+- 密钥在 `.env`，`launch-vps.sh` / `launch-mac.sh` 启动时 source 进环境；
+  脚本源 subprocess 同样继承
+- 模板：`config.platform.yaml.example`（渠道默认关闭）
+- 常用密钥：`WECHAT_WEBHOOK`、`DISCORD_PUSH_WEBHOOK`、`FRED_API_KEY`（宏观报告）、
+  `GLM_API_KEY`（翻译/简评）、`NIMBUS_ADMIN_TOKEN`（管理 API）、
+  `LONGPORT_APP_KEY` / `LONGPORT_APP_SECRET` / `LONGPORT_ACCESS_TOKEN`（港股/A股行情）
 
 数据源全览见 nimbus-os 仓 `docs/references/news-sources.md`（news 仓源码为准，文档随源变更在 nimbus-os 更新）。
 

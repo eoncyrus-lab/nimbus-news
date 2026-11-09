@@ -38,6 +38,11 @@ type MarketBriefingSource struct {
 	// 时段组装后的裁剪开关：默认全开，配置显式关闭才跳过对应段落/脚本。
 	includeFedwatch bool
 	closingSections map[string]bool
+
+	// 美股收盘增量内容
+	includeEarnings bool
+	earningsMinCap  float64           // 财报只列市值 ≥ 该值的公司（美元）
+	ashareStocks    map[string]string // 覆盖默认的 A 股产业链映射
 }
 
 func (s *MarketBriefingSource) sectionEnabled(name string) bool {
@@ -66,6 +71,8 @@ func NewMarketBriefingSource(cfg Config) (Source, error) {
 		scriptsDir:      "scripts",
 		marketService:   market.NewMarketService(),
 		includeFedwatch: true,
+		includeEarnings: true,
+		earningsMinCap:  20e9,
 	}
 	if v, ok := cfg.Options["briefing_type"].(string); ok && v != "" {
 		s.briefingType = v
@@ -78,6 +85,24 @@ func NewMarketBriefingSource(cfg Config) (Source, error) {
 	}
 	if v, ok := cfg.Options["include_fedwatch"].(bool); ok {
 		s.includeFedwatch = v
+	}
+	if v, ok := cfg.Options["include_earnings"].(bool); ok {
+		s.includeEarnings = v
+	}
+	// 单位：亿美元，默认 200 亿美元。
+	if v, ok := cfg.Options["earnings_min_cap_100m"].(float64); ok && v > 0 {
+		s.earningsMinCap = v * 1e8
+	}
+	if v, ok := cfg.Options["earnings_min_cap_100m"].(int); ok && v > 0 {
+		s.earningsMinCap = float64(v) * 1e8
+	}
+	if raw, ok := cfg.Options["ashare_map"].(map[string]interface{}); ok {
+		s.ashareStocks = make(map[string]string, len(raw))
+		for key, value := range raw {
+			if text, ok := value.(string); ok && text != "" {
+				s.ashareStocks[strings.ToUpper(key)] = text
+			}
+		}
 	}
 	if raw, ok := cfg.Options["sections"].([]interface{}); ok {
 		s.closingSections = make(map[string]bool, len(raw))
@@ -892,13 +917,14 @@ func (s *MarketBriefingSource) renderUSPreview(
 // ── us_close: 美盘收盘 + 盘后 + 夜盘 + A股映射（美东 20:05 后）──
 
 type usCloseData struct {
-	indexLines   []string
-	rateLines    []string
-	sectorLines  []string
-	afterLines   []string
-	nightLines   []string
-	chinaLines   []string
-	mappingLines []string
+	indexLines    []string
+	rateLines     []string
+	sectorLines   []string
+	afterLines    []string
+	nightLines    []string
+	chinaLines    []string
+	earningsLines []string
+	mappingLines  []string
 }
 
 func (s *MarketBriefingSource) fetchUSClose(parent context.Context) ([]*model.Message, error) {
@@ -911,14 +937,20 @@ func (s *MarketBriefingSource) fetchUSClose(parent context.Context) ([]*model.Me
 	indexLines := s.fetchQuotesBlock(ctx, []string{"^GSPC", "^IXIC", "^DJI", "^VIX"})
 	rateLines := fetchRatesBlock(ctx)
 	nightLines := s.fetchQuotesBlock(ctx, []string{"ES=F", "NQ=F", "YM=F", "GC=F", "CL=F", "HG=F", "BTC-USD", "USDCNH=X"})
-	sectorLines := summarizeSectors(s.quoteChanges(ctx, spdrSectorSymbols))
-	chinaLines := s.fetchQuotesBlock(ctx, []string{"KWEB", "FXI", "RSP", "SOXX"})
+	sectorChanges := s.quoteChanges(ctx, spdrSectorSymbols)
+	sectorLines := append(summarizeSectors(sectorChanges), s.breadthLines(ctx, sectorChanges)...)
+	chinaLines := s.fetchQuotesBlock(ctx, []string{"KWEB", "FXI", "SOXX"})
+	var earningsLines []string
+	if s.includeEarnings {
+		earningsLines = fetchEarningsBlock(ctx, time.Now().In(newYorkLocation()).Format("2006-01-02"), s.earningsMinCap)
+	}
 	afterLines := s.fetchExtendedLines(ctx, []string{"SPY", "QQQ", "KWEB", "FXI"}, "盘后")
 	mappingLines := s.ashareMappingLines(ctx)
 
 	data := usCloseData{
 		indexLines: indexLines, rateLines: rateLines, sectorLines: sectorLines,
-		afterLines: afterLines, nightLines: nightLines, chinaLines: chinaLines, mappingLines: mappingLines,
+		afterLines: afterLines, nightLines: nightLines, chinaLines: chinaLines,
+		earningsLines: earningsLines, mappingLines: mappingLines,
 	}
 	narrative := s.usCloseNarrative(ctx, data)
 	if len(indexLines) == 0 && len(nightLines) == 0 && len(afterLines) == 0 &&
@@ -962,7 +994,10 @@ func renderUSClose(data usCloseData, narrative string) string {
 	writeLines("── 板块轮动 ──", data.sectorLines, "暂无数据")
 	writeLines("── 盘后/盘前（扩展时段）──", data.afterLines, "扩展时段无成交或数据源不可用")
 	writeLines("── 夜盘期货与汇率 ──", data.nightLines, "暂无数据")
-	writeLines("── 中国相关与宽度 ──", data.chinaLines, "暂无数据")
+	writeLines("── 中国与半导体 ──", data.chinaLines, "暂无数据")
+	if len(data.earningsLines) > 0 {
+		writeLines("── 今日盘后财报（大市值）──", data.earningsLines, "")
+	}
 	b.WriteString("注：个股盘后与 Blue Ocean 夜盘不在行情源覆盖内，\n")
 	b.WriteString("ETF 盘后用 Nasdaq 收盘后报价，期货与汇率代理隔夜方向。\n\n")
 	if len(data.mappingLines) > 0 {
@@ -991,7 +1026,8 @@ func (s *MarketBriefingSource) usCloseNarrative(ctx context.Context, data usClos
 	appendBlock("板块轮动", data.sectorLines)
 	appendBlock("盘后", data.afterLines)
 	appendBlock("夜盘期货与汇率", data.nightLines)
-	appendBlock("中国相关与宽度", data.chinaLines)
+	appendBlock("中国与半导体", data.chinaLines)
+	appendBlock("今日盘后财报", data.earningsLines)
 	appendBlock("对A股/港股映射", data.mappingLines)
 	prompt := fmt.Sprintf(`你是资深美股收盘分析师，请基于以下数据做 280 字以内收盘复盘:
 
@@ -1103,7 +1139,11 @@ func (s *MarketBriefingSource) fetchExtendedLines(ctx context.Context, symbols [
 			} else if changePct < -0.05 {
 				icon = "🔴"
 			}
-			lines[i] = fmt.Sprintf("%s %s %-5s %.2f (%+.2f%%)", icon, sessionLabel, sym, price, changePct)
+			name := quoteDisplayNames[sym]
+			if name == "" {
+				name = sym
+			}
+			lines[i] = fmt.Sprintf("%s %s %s %.2f (%+.2f%%)", icon, sessionLabel, name, price, changePct)
 		}(i, sym)
 	}
 	wg.Wait()
@@ -1148,6 +1188,18 @@ func fetchNasdaqExtended(ctx context.Context, symbol string) (float64, float64, 
 		change = (price - prev) / prev * 100
 	}
 	return price, change, payload.Data.MarketStatus, true
+}
+
+// formatEPS 把 Nasdaq 的 (0.05) / $1.43 转成中文可读的 -0.05 / 1.43。
+func formatEPS(value string) string {
+	value = strings.TrimSpace(value)
+	negative := strings.HasPrefix(value, "(") && strings.HasSuffix(value, ")")
+	value = strings.Trim(value, "()")
+	value = strings.TrimPrefix(value, "$")
+	if negative && !strings.HasPrefix(value, "-") {
+		value = "-" + value
+	}
+	return value
 }
 
 func parseMoney(value string) float64 {
@@ -1223,37 +1275,98 @@ func summarizeSectors(changes map[string]float64) []string {
 	return []string{"领涨：" + format(top), "领跌：" + format(bottom)}
 }
 
-// ashareMappingLines 把美股隔夜锚点映射到 A 股/港股板块方向；只给条件式方向，不点名个股。
-func (s *MarketBriefingSource) ashareMappingLines(ctx context.Context) []string {
-	changes := s.quoteChanges(ctx, []string{"^IXIC", "SOXX", "KWEB", "CL=F", "GC=F", "HG=F", "USDCNH=X", "^TNX"})
-	type rule struct {
-		symbol    string
-		threshold float64
-		label     string
-		up        string
-		down      string
+// breadthLines 自己算宽度：11 个 SPDR 板块的涨跌家数，以及等权 vs 市值的差值。
+// 免费源没有稳定的 NYSE/Nasdaq 涨跌家数，板块宽度是当前可得的最可靠代理。
+func (s *MarketBriefingSource) breadthLines(ctx context.Context, sectors map[string]float64) []string {
+	up, down := 0, 0
+	for _, change := range sectors {
+		switch {
+		case change > 0:
+			up++
+		case change < 0:
+			down++
+		}
 	}
-	rules := []rule{
-		{"^IXIC", 0.5, "纳指", "创业板/科创、AI 算力情绪偏暖", "创业板/科创、AI 算力承压"},
-		{"SOXX", 0.8, "费城半导体", "A 股半导体/设备/PCB 偏暖", "A 股半导体/设备/PCB 承压"},
-		{"KWEB", 0.8, "中概", "港股互联网、A 股相关映射偏暖", "港股互联网、A 股相关映射承压"},
-		{"CL=F", 1.5, "原油", "石油石化/油服偏强", "石油石化/油服偏弱"},
-		{"GC=F", 0.8, "黄金", "黄金股偏强", "黄金股偏弱"},
-		{"HG=F", 1.0, "铜", "有色/铜产业链偏强", "有色/铜产业链偏弱"},
-		{"USDCNH=X", 0.2, "美元/离岸人民币", "人民币走弱，出口链相对受益、北向承压", "人民币走强，出口链承压、北向偏暖"},
+	if up+down == 0 {
+		return nil
+	}
+	lines := []string{fmt.Sprintf("板块宽度：%d 涨 %d 跌（共 %d 个板块）", up, down, up+down)}
+	changes := s.quoteChanges(ctx, []string{"RSP", "SPY"})
+	rsp, okRSP := changes["RSP"]
+	spy, okSPY := changes["SPY"]
+	if okRSP && okSPY {
+		jump := "中性"
+		if rsp-spy > 0.3 {
+			jump = "偏强（等权跑赢市值）"
+		} else if rsp-spy < -0.3 {
+			jump = "偏弱（市值跑赢等权）"
+		}
+		lines = append(lines, fmt.Sprintf("等权 %+.2f%% vs 市值 %+.2f%% → 宽度%s", rsp, spy, jump))
+	}
+	return lines
+}
+
+// ── 今日盘后财报（Nasdaq 日历，非官方接口，失败静默降级）──
+
+type nasdaqEarningsPayload struct {
+	Data struct {
+		Rows []struct {
+			Time        string `json:"time"`
+			Symbol      string `json:"symbol"`
+			Name        string `json:"name"`
+			MarketCap   string `json:"marketCap"`
+			EPSForecast string `json:"epsForecast"`
+		} `json:"rows"`
+	} `json:"data"`
+}
+
+func fetchEarningsBlock(ctx context.Context, date string, minCap float64) []string {
+	endpoint := fmt.Sprintf("https://api.nasdaq.com/api/calendar/earnings?date=%s", date)
+	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120 Safari/537.36")
+	req.Header.Set("Accept", "application/json")
+	client := &http.Client{Timeout: 8 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	var payload nasdaqEarningsPayload
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil
 	}
 	var out []string
-	for _, r := range rules {
-		change, ok := changes[r.symbol]
-		if !ok || absFloat(change) < r.threshold {
+	for _, row := range payload.Data.Rows {
+		if row.Time != "time-after-hours" {
 			continue
 		}
-		text := r.down
-		if change > 0 {
-			text = r.up
+		cap := parseMoney(row.MarketCap)
+		if cap < minCap {
+			continue
 		}
-		out = append(out, fmt.Sprintf("%s %+.2f%% → %s", r.label, change, text))
+		eps := strings.TrimSpace(row.EPSForecast)
+		if eps == "" || eps == "N/A" {
+			eps = "暂无"
+		}
+		out = append(out, fmt.Sprintf("盘后 %s（市值 %.0f 亿美元，预期每股收益 %s 美元）", row.Symbol, cap/1e8, formatEPS(eps)))
+		if len(out) >= 6 {
+			break
+		}
 	}
+	return out
+}
+
+// ashareMappingLines 把美股锚点映射到 A 股/港股板块与产业链方向。
+func (s *MarketBriefingSource) ashareMappingLines(ctx context.Context) []string {
+	changes := s.quoteChanges(ctx, []string{"^IXIC", "SOXX", "KWEB", "CL=F", "GC=F", "HG=F", "USDCNH=X"})
+	stocks := s.quoteChanges(ctx, []string{"NVDA", "AAPL", "TSLA"})
+	out := renderAshareMapping(changes, stocks, s.ashareStocks)
 	// 美债用收益率变化（百分点）判断，ChangePercent 是收益率的百分比，不适合直接比。
 	if q, err := dsyahoo.GetQuote(ctx, "^TNX"); err == nil && q != nil && q.PrevClose > 0 {
 		delta := q.Last - q.PrevClose
@@ -1267,6 +1380,83 @@ func (s *MarketBriefingSource) ashareMappingLines(ctx context.Context) []string 
 		out = append(out, "各锚点变动均未达到阈值，暂无明确方向映射")
 	}
 	return out
+}
+
+var defaultAshareChains = map[string]string{
+	"SOXX": "半导体设备/材料：北方华创、中微公司、沪硅产业",
+	"KWEB": "港股互联网：腾讯、阿里、美团",
+	"CL=F": "石化/油服：中国石油、中国海油、中海油服",
+	"GC=F": "黄金：山东黄金、紫金矿业、中金黄金",
+	"HG=F": "铜：紫金矿业、江西铜业、铜陵有色",
+	"NVDA": "算力/光模块/PCB：中际旭创、新易盛、沪电股份、工业富联",
+	"AAPL": "苹果链：立讯精密、歌尔股份、蓝思科技",
+	"TSLA": "特斯拉链：拓普集团、三花智控、旭升集团",
+}
+
+func renderAshareMapping(changes, stocks map[string]float64, overrides map[string]string) []string {
+	type rule struct {
+		symbol    string
+		threshold float64
+		label     string
+		up        string
+		down      string
+		chain     bool
+	}
+	rules := []rule{
+		{"^IXIC", 0.5, "纳指", "创业板/科创、AI 算力情绪偏暖", "创业板/科创、AI 算力承压", false},
+		{"SOXX", 0.8, "费城半导体", "A 股半导体/设备/PCB 偏暖", "A 股半导体/设备/PCB 承压", true},
+		{"KWEB", 0.8, "中概互联网", "港股互联网、A 股相关映射偏暖", "港股互联网、A 股相关映射承压", true},
+		{"CL=F", 1.5, "原油", "石油石化/油服偏强", "石油石化/油服偏弱", true},
+		{"GC=F", 0.8, "黄金", "黄金股偏强", "黄金股偏弱", true},
+		{"HG=F", 1.0, "铜", "有色/铜产业链偏强", "有色/铜产业链偏弱", true},
+		{"USDCNH=X", 0.2, "美元/离岸人民币", "人民币走弱，出口链相对受益、北向承压", "人民币走强，出口链承压、北向偏暖", false},
+	}
+	var out []string
+	for _, r := range rules {
+		change, ok := changes[r.symbol]
+		if !ok || absFloat(change) < r.threshold {
+			continue
+		}
+		text := r.down
+		if change > 0 {
+			text = r.up
+		}
+		line := fmt.Sprintf("%s %+.2f%% → %s", r.label, change, text)
+		if r.chain {
+			line += "（" + chainFor(r.symbol, overrides) + "）"
+		}
+		out = append(out, line)
+	}
+
+	stockRules := []struct {
+		symbol    string
+		threshold float64
+		label     string
+	}{
+		{"NVDA", 2.0, "英伟达"},
+		{"AAPL", 1.5, "苹果"},
+		{"TSLA", 2.5, "特斯拉"},
+	}
+	for _, r := range stockRules {
+		change, ok := stocks[r.symbol]
+		if !ok || absFloat(change) < r.threshold {
+			continue
+		}
+		out = append(out, fmt.Sprintf("%s %+.2f%% → %s", r.label, change, chainFor(r.symbol, overrides)))
+	}
+	return out
+}
+
+func chainFor(symbol string, overrides map[string]string) string {
+	if overrides != nil {
+		if text, ok := overrides[symbol]; ok && text != "" {
+			return text
+		}
+	}
+	if text, ok := defaultAshareChains[symbol]; ok {
+		return text
+	}
+	return "产业链关注"
 }
 
 func absFloat(v float64) float64 {
@@ -1324,10 +1514,10 @@ func (s *MarketBriefingSource) usPreviewNarrative(
 var quoteDisplayNames = map[string]string{
 	"ES=F": "标普期货", "NQ=F": "纳指期货", "YM=F": "道指期货",
 	"GC=F": "黄金", "CL=F": "原油", "HG=F": "铜",
-	"BTC-USD": "BTC", "USDCNH=X": "USD/CNH",
-	"KWEB": "中概KWEB", "FXI": "中国大盘FXI", "RSP": "等权RSP", "SOXX": "费半SOXX",
-	"SPY": "标普SPY", "QQQ": "纳指QQQ", "^GSPC": "标普500", "^IXIC": "纳斯达克",
-	"^DJI": "道指", "^VIX": "VIX", "DX-Y.NYB": "美元指数",
+	"BTC-USD": "比特币", "USDCNH=X": "离岸人民币",
+	"KWEB": "中概互联网ETF", "FXI": "中国大盘ETF", "RSP": "标普等权ETF", "SOXX": "费城半导体ETF",
+	"SPY": "标普500ETF", "QQQ": "纳指100ETF", "^GSPC": "标普500", "^IXIC": "纳斯达克",
+	"^DJI": "道指", "^VIX": "恐慌指数VIX", "DX-Y.NYB": "美元指数",
 }
 
 // fetchRatesBlock 用 Yahoo 原始报价取美债收益率：行情服务的 CBOE 适配器会把

@@ -514,6 +514,12 @@ sources:
           type: "market-briefing"
           options:
             briefing_type: "us_close"
+            # 盘后大市值财报（Nasdaq 日历，非官方接口，失败自动降级）
+            include_earnings: true
+            earnings_min_cap_100m: 200   # 只列市值 ≥200 亿美元的盘后财报
+            # 覆盖默认的 A 股产业链映射（key 用美股锚点）
+            # ashare_map:
+            #   NVDA: "算力/光模块/PCB：中际旭创、新易盛、沪电股份、工业富联"
             python_cmd: "python3"
             scripts_dir: "scripts"
         - label: "资讯摘要"

@@ -267,22 +267,24 @@ sources:
     routing:
       ai_policy: bypass
       on_ai_failure: silent
+      # critical 只放“事件短语”，不再放“央行/CPI/制裁”这类主题词：
+      # 主题词出现即绕过每日配额，埃及央行、伊朗外交部表态也会被直推。
       critical_keywords:
-        - "央行"
-        - "美联储"
+        - "利率决议"
+        - "FOMC"
+        - "加息25个基点"
+        - "降息25个基点"
+        - "维持利率不变"
         - "降准"
-        - "降息"
-        - "加息"
         - "LPR"
-        - "非农"
-        - "CPI"
-        - "PPI"
-        - "关税"
-        - "制裁"
-        - "停火"
-        - "开战"
-        - "台海"
-        - "霍尔木兹"
+        - "存款准备金率"
+        - "熔断"
+        - "暂停交易"
+        - "债务违约"
+        - "银行破产"
+        - "封锁霍尔木兹"
+      # critical 也要有日上限，防止以后某个关键词再次打穿配额。
+      critical_max_per_day: 8
       direct: {max_per_day: 3, priority: 70}
       digest: {max_per_day: 6, priority: 60, briefing_target: news_aggregate}
       default: direct
@@ -290,6 +292,13 @@ sources:
       max_age_hours: 2
       limit: 40
       min_important: 1
+      # 信噪比：实体+事件+数据发布+important 打分，低于阈值不进路由。
+      # 0 = 回退旧的关键词 accept（不推荐）。
+      score_threshold: 45
+      # 把 section-news 多条目合集拆开逐条打分。
+      split_roundups: true
+      # 相同正文在窗口内只发一次（金十同内容会换 ID 重发）。
+      dedupe_hours: 2
       tags: ["中国", "宏观", "金十"]
       # 个股公告（公告/减持/解禁/业绩预告…）不进实时推送，
       # 在源内按天攒着，每天 08:30 汇总成一条（窗口 30 分钟内只发一次）。

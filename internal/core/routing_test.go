@@ -468,12 +468,16 @@ func TestTypedCriticalBypassesAIAndQuotaLimitButRecordsAdmission(t *testing.T) {
 	attachSuccessfulTypedRouter(engine)
 	routing := typedRoutingPolicy()
 	routing.Critical = true
+	routing.CriticalMaxPerDay = 5
 	msg := &model.Message{ID: "critical", Title: "headline", Content: "content", Metadata: map[string]interface{}{}}
 	if !engine.routeTypedMessages(context.Background(), "feed", newsSourceInfo{routing: routing, channels: []string{"main"}}, []*model.Message{msg}) {
 		t.Fatal("route failed")
 	}
 	if provider.calls != 0 || store.directCalls != 1 || store.digestCalls != 0 || !store.directRequest.Critical {
 		t.Fatalf("ai=%d direct=%d digest=%d", provider.calls, store.directCalls, store.digestCalls)
+	}
+	if store.directRequest.CriticalMaxPerDay != 5 {
+		t.Fatalf("critical max not propagated: %+v", store.directRequest)
 	}
 }
 

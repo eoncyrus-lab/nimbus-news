@@ -45,7 +45,7 @@ go run ./cmd/source-dump -config /tmp/nimbus-dump/config.yaml \
 | bloomberg-markets | rss | ok | 17 | 2.4s | 纯英文摘要 |
 | bloomberg-economics | rss | ok | 8 | 1.6s | 纯英文摘要 |
 | forexlive-breaking | rss | ok | 25 | 1.4s | 长文已按句/列表切成分点 |
-| jin10 | jin10 | ok | 17 | 0.1s | 只留 important/宏观条目 |
+| jin10 | jin10 | ok | 5 | 0.2s | 评分过滤：实体+事件+数据发布；非中美欧日央行降权 |
 | wallstcn-hk | wallstcn | ok | 7 | 0.7s | 自带评分 |
 | guanfu-score | guanfu | ok | 1 | 36.4s | 50 币种历史，最慢 |
 | session-morning | session | ok | 1 | 7.5s | 行情 + 日历 |
@@ -245,18 +245,27 @@ Fed 等按 URL 映射，未知域名回落 `RSS`。
   "content_runes": 28,
   "link": "https://flash.jin10.com/detail/20261109163834903800",
   "tags": ["中国", "宏观", "金十"],
-  "metadata": {"display_source": "金十数据", "important": 1},
+  "metadata": {"display_source": "金十数据", "important": 1, "jin10_score": 70, "jin10_reasons": "核心央行:央行操作,利率/货币操作:逆回购,important"},
   "create_time": "2026-11-09T16:38:34+08:00"
 }
 ```
 
 - 走公开 JSON API，每次约 20 条，按 `max_time` 翻页；默认 3 小时内最多 40 条。
-- 过滤：`important=1` 或命中宏观关键词才保留；个股公告类（公告/减持/解禁/业绩预告…）不进实时推送。
+- 过滤改为评分制（`score_threshold`，默认 45）：实体（中美欧日央行/中国政策机构/巨头）
+  + 事件（利率操作/数据发布/政策动作/地缘升级/市场异动）+ `important`，再对边缘市场、
+  人事、预告、机构观点、官方表态降权。低于阈值不进路由。
+- 只认中美欧日（+英国）央行；“埃及/墨西哥/俄罗斯/土耳其”等央行按边缘市场 -40，
+  基本不会过阈值。
+- 促销/导流（点击查看、一文看懂、VIP、金十整理…）直接丢弃；`section-news` 多条目合集
+  会拆成单条分别打分。
+- 相同正文在 `dedupe_hours`（默认 2h）内只发一次；金十同内容会换 ID 重发。
+- 个股公告类（公告/减持/解禁/业绩预告…）不进实时推送；商务部/交易所公告不算噪音，
+  交给评分判断。
 - 标题优先取 `【】` 内的内容，没有则取第一句（≤60 字符）。
 - 公告噪音在源内按天攒着，每天 `noise_summary_time`（默认 08:30，30 分钟窗口）汇总成一条
   `type=analysis` 的消息：标题 `📋 金十公告汇总 · 近24小时（N 条）`，正文按类计数 + 列出前
   `noise_summary_limit` 条。它不进事件引擎，也不占实时判定；`noise_daily_summary: false` 可关。
-- 实测 2 小时窗口 40 条上游快讯 → 17 条有效，宏观/央行/伊朗/原油为主。
+- 评分原因写在 `metadata.jin10_reasons`，便于核对某条为什么被推/被丢。
 
 ## 5. 时段简报（session）
 

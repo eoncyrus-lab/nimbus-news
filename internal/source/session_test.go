@@ -263,17 +263,17 @@ func TestUSSessionPhaseFollowsEasternTime(t *testing.T) {
 		t.Fatal("winter 22:00 Beijing should be preopen (09:00 ET)")
 	}
 
-	// 收盘：北京 04:05（夏）/05:05（冬）= 美东 16:05。
+	// 收盘+盘后：北京 08:05（夏）/09:05（冬）= 美东 20:05。
 	closeSession := makeSession(sessionUSClose, "")
-	if !closeSession.sessionActive(time.Date(2026, 7, 15, 4, 5, 0, 0, loc)) {
-		t.Fatal("summer 04:05 Beijing should be US close")
+	if !closeSession.sessionActive(time.Date(2026, 7, 15, 8, 5, 0, 0, loc)) {
+		t.Fatal("summer 08:05 Beijing should be US close")
 	}
-	// 北京 11-10 05:05 = 美东 11-09 16:05（周一收盘）。
-	if !closeSession.sessionActive(time.Date(2026, 11, 10, 5, 5, 0, 0, loc)) {
-		t.Fatal("winter 05:05 Beijing should be US close")
+	// 北京 11-10 09:05 = 美东 11-09 20:05（周一盘后结束）。
+	if !closeSession.sessionActive(time.Date(2026, 11, 10, 9, 5, 0, 0, loc)) {
+		t.Fatal("winter 09:05 Beijing should be US close")
 	}
-	if closeSession.sessionActive(time.Date(2026, 7, 15, 5, 5, 0, 0, loc)) {
-		t.Fatal("summer 05:05 Beijing is 17:05 ET, close must skip")
+	if closeSession.sessionActive(time.Date(2026, 7, 15, 9, 5, 0, 0, loc)) {
+		t.Fatal("summer 09:05 Beijing is 21:05 ET, close must skip")
 	}
 
 	// 周末按美东日期跳过：北京周一 22:00 = 美东周日。

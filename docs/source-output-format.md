@@ -339,7 +339,8 @@ A股 恐慌分 20/100（平静）| RV20 16.1% | 日涨跌 +0.32% | 距20日高 -
 | 成员 | 段落 | 数据 |
 |---|---|---|
 | 美盘行情（market-briefing/us_preview） | `── 关键标的 ──`、`── VIX ──`、`── 利率路径 ──` | Go 行情；FedWatch 可选 |
-| 美盘收盘（market-briefing/us_close） | `── 收盘指数 ──`、`── 夜盘与盘后 ──`、`── AI 收盘复盘 ──` | 美东 16:05；ES/NQ 代理夜盘 |
+| 美盘收盘（market-briefing/us_close） | `── 收盘指数 ──`、`── 利率与美元 ──`、`── 板块轮动 ──`、`── 盘后/盘前 ──`、`── 夜盘期货与汇率 ──`、`── 中国相关与宽度 ──`、`── 对 A 股映射 ──` | 美东 20:05；盘后用 Nasdaq ETF 报价，期货/汇率代理夜盘 |
+| 美股夜盘（market-briefing/us_overnight） | `── 夜盘期货与汇率 ──`、`── ETF 夜盘/盘前 ──`、`── 对今日 A 股映射 ──` | 作 session-close 成员，北京时间 16:10 左右 |
 | 美国宏观（us-macro-report） | FRED 核心指标/流动性 | 需要 `FRED_API_KEY` |
 | 明日数据（script） | `── 🌏 经济事件 MM-DD ──` | `scripts/econ_calendar.py` |
 | 资讯摘要（market-briefing/aggregate） | `## 资讯摘要` | digest 租约桶 |

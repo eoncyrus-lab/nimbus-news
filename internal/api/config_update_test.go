@@ -196,7 +196,7 @@ func TestSessionBriefingSourcesConfigured(t *testing.T) {
 		{"session-morning", []string{"09:20", "09:40", "11:35", "15:05"}, "morning"},
 		{"session-close", []string{"16:10"}, "close"},
 		{"session-us", []string{"21:00", "22:00"}, "us"},
-		{"session-us-close", []string{"04:05", "05:05"}, "us_close"},
+		{"session-us-close", []string{"08:05", "09:05"}, "us_close"},
 		{"session-week", []string{"20:00"}, "week"},
 	}
 	for _, w := range want {

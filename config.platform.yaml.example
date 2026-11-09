@@ -425,6 +425,10 @@ sources:
           options:
             window_hours: 8
             limit: 8
+        - label: "美股夜盘"
+          type: "market-briefing"
+          options:
+            briefing_type: "us_overnight"
         - label: "资讯摘要"
           type: "market-briefing"
           options:
@@ -495,12 +499,12 @@ sources:
             python_cmd: "python3"
             scripts_dir: "scripts"
 
-  # 美盘收盘/夜盘复盘：美东 16:05（北京夏令时 04:05 / 冬令时 05:05）。
-  # 美股正常时段就是中国的夜里，这条覆盖夜盘收盘；盘后个股数据不在行情源内，
-  # 用 ES/NQ 期货与离岸人民币代理隔夜方向。
+  # 美盘收盘+盘后：美东 20:05（北京夏令时 08:05 / 冬令时 09:05）。
+  # 16:00 常规收盘后还有 4 小时盘后交易，20:05 才能拿到完整盘后数据；
+  # 北京时间正好在 A 股开盘前，顺带给出对 A 股/港股的板块映射。
   - name: "session-us-close"
     type: "session"
-    schedule: ["04:05", "05:05"]
+    schedule: ["08:05", "09:05"]
     sinks: ["wechat-main", "discord-webhook"]
     options:
       session: "us_close"

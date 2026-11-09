@@ -318,7 +318,7 @@ Section 契约：`Render(ctx, window) (Block, error)`，独立超时、可 optio
 | session-morning | 09:20 / 09:40 / 11:35 / 15:05 | pre_market（`calendar: false`）+ econ_calendar + aggregate（`include_blockbeats: false`） | 隔夜/实时行情 + 今日数据 + 新增资讯摘要 + AI 相位研判；标题随竞价/开盘/午盘/收盘变化 |
 | session-close | 16:10 | closing（`sections: [sentiment, hot_sector, capital_flow, lhb]`）+ aggregate | 指数/涨跌家数/成交额/情绪 + 热门板块 + 两融/主力资金 + 龙虎榜 + **A/H 恐慌温度** + 全天资讯摘要 + AI 复盘 |
 | session-us | 美东 09:00（北京 21:00 夏 / 22:00 冬） | us_preview（`include_fedwatch: false`）+ us_macro_report + econ_calendar + aggregate | 美股行情/VIX 期限 + FRED/流动性/FedWatch/未来发布 + 明日数据 + 资讯摘要 + AI 前瞻 |
-| session-us-close | 美东 16:05（北京 04:05 夏 / 05:05 冬） | us_close + aggregate | 收盘指数 + 夜盘/盘后期货与汇率 + AI 收盘复盘 |
+| session-us-close | 美东 20:05（北京 08:05 夏 / 09:05 冬） | us_close + aggregate | 收盘指数 + 利率/美元 + 板块轮动 + 盘后 ETF + 夜盘期货/汇率 + A股映射 + AI 复盘 |
 
 - 单成员失败只降级该段，不影响整条；聚合成员租到的 `digest_lease_id` 会透传到合并消息，保证 ack 正常。
 - 交易日判断：morning/close 用 A 股交易日；us 用美东星期（北京周一 21:00 = 美东周日，跳过）。

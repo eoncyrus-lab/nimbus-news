@@ -420,7 +420,8 @@ func (s *SessionSource) sessionActive(now time.Time) bool {
 		case "preopen":
 			return minutes >= 8*60+50 && minutes < 9*60+10
 		case "close":
-			return minutes >= 16*60 && minutes < 16*60+20
+			// 20:05 ET：常规收盘 + 盘后结束，此时才拿得到完整盘后数据。
+			return minutes >= 20*60+5 && minutes < 20*60+25
 		}
 		return false
 	case sessionWeek:

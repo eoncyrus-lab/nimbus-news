@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +17,7 @@ import (
 	"github.com/Ricaardo/nimbus-os/news/internal/model"
 
 	"github.com/Ricaardo/nimbus-os/datasources/market"
+	dsyahoo "github.com/Ricaardo/nimbus-os/datasources/yahoo"
 )
 
 func init() {
@@ -112,6 +115,8 @@ func (s *MarketBriefingSource) FetchContext(parent context.Context) ([]*model.Me
 		messages, err = s.fetchUSPreview(parent)
 	case "us_close":
 		messages, err = s.fetchUSClose(parent)
+	case "us_overnight":
+		messages, err = s.fetchUSOvernight(parent)
 	case "aggregate":
 		messages, err = s.fetchAggregate(parent)
 	default:
@@ -808,9 +813,10 @@ func (s *MarketBriefingSource) fetchUSPreview(parent context.Context) ([]*model.
 	if r, ok := results["vix_term"]; ok && r.Err == nil {
 		vixTermRaw = string(r.Raw)
 	}
-	// 2. 关键标的行情
-	ussymbols := []string{"SPY", "QQQ", "GC=F", "CL=F", "BTC-USD"}
+	// 2. 关键标的行情（含夜盘期货、汇率与中概）
+	ussymbols := []string{"SPY", "QQQ", "KWEB", "FXI", "ES=F", "NQ=F", "GC=F", "CL=F", "BTC-USD", "USDCNH=X", "^TNX", "DX-Y.NYB"}
 	quoteLines := s.fetchQuotesBlock(ctx, ussymbols)
+	preLines := s.fetchExtendedLines(ctx, []string{"SPY", "QQQ", "KWEB", "FXI"}, "盘前")
 
 	// 3. AI 叙事
 	narrative := s.usPreviewNarrative(ctx, quoteLines, fedwatchRaw, vixTermRaw)
@@ -819,7 +825,7 @@ func (s *MarketBriefingSource) fetchUSPreview(parent context.Context) ([]*model.
 		return nil, nil
 	}
 
-	content := s.renderUSPreview(quoteLines, fedwatchRaw, vixTermRaw, narrative)
+	content := s.renderUSPreview(preLines, quoteLines, fedwatchRaw, vixTermRaw, narrative)
 	now := time.Now()
 	id := fmt.Sprintf("us_preview_%s", now.Format("20060102"))
 	msg := &model.Message{
@@ -838,12 +844,21 @@ func (s *MarketBriefingSource) fetchUSPreview(parent context.Context) ([]*model.
 }
 
 func (s *MarketBriefingSource) renderUSPreview(
+	preLines []string,
 	quotes []string,
 	fedwatchRaw string,
 	vixTermRaw string,
 	narrative string,
 ) string {
 	var b strings.Builder
+
+	if len(preLines) > 0 {
+		b.WriteString("── 盘前 ──\n")
+		for _, line := range preLines {
+			b.WriteString(line + "\n")
+		}
+		b.WriteString("\n")
+	}
 
 	// 关键标的行情
 	b.WriteString("── 关键标的 ──\n")
@@ -874,8 +889,17 @@ func (s *MarketBriefingSource) renderUSPreview(
 	return b.String()
 }
 
-// ── us_close: 美盘收盘/夜盘复盘（美东 16:00 后）──
-// 收盘指数 + 盘后/夜盘期货与汇率 + VIX + AI 复盘。
+// ── us_close: 美盘收盘 + 盘后 + 夜盘 + A股映射（美东 20:05 后）──
+
+type usCloseData struct {
+	indexLines   []string
+	rateLines    []string
+	sectorLines  []string
+	afterLines   []string
+	nightLines   []string
+	chinaLines   []string
+	mappingLines []string
+}
 
 func (s *MarketBriefingSource) fetchUSClose(parent context.Context) ([]*model.Message, error) {
 	if !usWeekday(time.Now()) {
@@ -885,68 +909,91 @@ func (s *MarketBriefingSource) fetchUSClose(parent context.Context) ([]*model.Me
 	defer cancel()
 
 	indexLines := s.fetchQuotesBlock(ctx, []string{"^GSPC", "^IXIC", "^DJI", "^VIX"})
-	nightLines := s.fetchQuotesBlock(ctx, []string{"ES=F", "NQ=F", "GC=F", "CL=F", "BTC-USD", "USDCNH=X"})
-	narrative := s.usCloseNarrative(ctx, indexLines, nightLines)
-	if len(indexLines) == 0 && len(nightLines) == 0 && strings.TrimSpace(narrative) == "" {
+	rateLines := fetchRatesBlock(ctx)
+	nightLines := s.fetchQuotesBlock(ctx, []string{"ES=F", "NQ=F", "YM=F", "GC=F", "CL=F", "HG=F", "BTC-USD", "USDCNH=X"})
+	sectorLines := summarizeSectors(s.quoteChanges(ctx, spdrSectorSymbols))
+	chinaLines := s.fetchQuotesBlock(ctx, []string{"KWEB", "FXI", "RSP", "SOXX"})
+	afterLines := s.fetchExtendedLines(ctx, []string{"SPY", "QQQ", "KWEB", "FXI"}, "盘后")
+	mappingLines := s.ashareMappingLines(ctx)
+
+	data := usCloseData{
+		indexLines: indexLines, rateLines: rateLines, sectorLines: sectorLines,
+		afterLines: afterLines, nightLines: nightLines, chinaLines: chinaLines, mappingLines: mappingLines,
+	}
+	narrative := s.usCloseNarrative(ctx, data)
+	if len(indexLines) == 0 && len(nightLines) == 0 && len(afterLines) == 0 &&
+		strings.TrimSpace(narrative) == "" {
 		return nil, nil
 	}
 
-	content := s.renderUSClose(indexLines, nightLines, narrative)
+	content := renderUSClose(data, narrative)
 	now := time.Now()
-	// 收盘简报在北京凌晨发出，标美东交易日才对得上"哪一天的收盘"。
+	// 收盘简报在北京早上发出，标美东交易日才对得上"哪一天的收盘"。
 	ny := now.In(newYorkLocation())
 	msg := &model.Message{
 		Type:       model.TypeAnalysis,
 		ID:         fmt.Sprintf("us_close_%s", ny.Format("20060102")),
-		Title:      fmt.Sprintf("🌎 美盘收盘 · %s", ny.Format("01-02")),
+		Title:      fmt.Sprintf("🌎 美盘收盘 · %s（含盘后）", ny.Format("01-02")),
 		Content:    content,
 		Source:     s.name,
 		SourceType: "market-briefing",
 		CreateTime: now,
 		FetchTime:  now,
-		Tags:       []string{"美股", "收盘", "夜盘", "复盘"},
+		Tags:       []string{"美股", "收盘", "盘后", "夜盘", "映射"},
 	}
 	msg.SetMetadata("display_source", "美盘收盘")
 	return []*model.Message{msg}, nil
 }
 
-func (s *MarketBriefingSource) renderUSClose(indexLines, nightLines []string, narrative string) string {
+func renderUSClose(data usCloseData, narrative string) string {
 	var b strings.Builder
-	b.WriteString("── 收盘指数 ──\n")
-	if len(indexLines) > 0 {
-		for _, line := range indexLines {
+	writeLines := func(title string, lines []string, empty string) {
+		b.WriteString(title + "\n")
+		if len(lines) == 0 {
+			b.WriteString(empty + "\n")
+		}
+		for _, line := range lines {
 			b.WriteString(line + "\n")
 		}
-	} else {
-		b.WriteString("暂无数据\n")
-	}
-	b.WriteString("\n── 夜盘与盘后 ──\n")
-	if len(nightLines) > 0 {
-		for _, line := range nightLines {
-			b.WriteString(line + "\n")
-		}
-	} else {
-		b.WriteString("暂无数据\n")
-	}
-	b.WriteString("注：个股盘后与 Blue Ocean 夜盘不在当前行情源覆盖内，\n")
-	b.WriteString("这里用 ES/NQ 期货与离岸人民币代理隔夜方向。\n")
-	if narrative != "" {
 		b.WriteString("\n")
+	}
+	writeLines("── 收盘指数 ──", data.indexLines, "暂无数据")
+	writeLines("── 利率与美元 ──", data.rateLines, "暂无数据")
+	writeLines("── 板块轮动 ──", data.sectorLines, "暂无数据")
+	writeLines("── 盘后/盘前（扩展时段）──", data.afterLines, "扩展时段无成交或数据源不可用")
+	writeLines("── 夜盘期货与汇率 ──", data.nightLines, "暂无数据")
+	writeLines("── 中国相关与宽度 ──", data.chinaLines, "暂无数据")
+	b.WriteString("注：个股盘后与 Blue Ocean 夜盘不在行情源覆盖内，\n")
+	b.WriteString("ETF 盘后用 Nasdaq 收盘后报价，期货与汇率代理隔夜方向。\n\n")
+	if len(data.mappingLines) > 0 {
+		writeLines("── 对明日 A 股/港股映射（仅方向参考）──", data.mappingLines, "")
+	}
+	if narrative != "" {
 		b.WriteString(FormatLLMSection("🤖 AI 收盘复盘", narrative))
 	}
 	return b.String()
 }
 
-func (s *MarketBriefingSource) usCloseNarrative(ctx context.Context, indexLines, nightLines []string) string {
+func (s *MarketBriefingSource) usCloseNarrative(ctx context.Context, data usCloseData) string {
 	if s.llmProvider == nil {
 		return ""
 	}
 	var lines []string
-	lines = append(lines, "【收盘指数】")
-	lines = append(lines, indexLines...)
-	lines = append(lines, "【盘后/夜盘期货与汇率】")
-	lines = append(lines, nightLines...)
-	prompt := fmt.Sprintf(`你是资深美股收盘分析师，请基于以下数据做 250 字以内收盘复盘:
+	appendBlock := func(title string, items []string) {
+		if len(items) == 0 {
+			return
+		}
+		lines = append(lines, "【"+title+"】")
+		lines = append(lines, items...)
+	}
+	appendBlock("收盘指数", data.indexLines)
+	appendBlock("利率与美元", data.rateLines)
+	appendBlock("板块轮动", data.sectorLines)
+	appendBlock("盘后", data.afterLines)
+	appendBlock("夜盘期货与汇率", data.nightLines)
+	appendBlock("中国相关与宽度", data.chinaLines)
+	appendBlock("对A股/港股映射", data.mappingLines)
+	prompt := fmt.Sprintf(`你是资深美股收盘分析师，请基于以下数据做 280 字以内收盘复盘:
 
 %s
 
@@ -954,9 +1001,279 @@ func (s *MarketBriefingSource) usCloseNarrative(ctx context.Context, indexLines,
 1) 指数与风格（科技/价值/防御）表现
 2) 盘后与夜盘期货指向，是否预示明日开盘方向
 3) VIX 与风险偏好
-4) 明日开盘需要关注的风险/事件
+4) 结合"对A股/港股映射"给条件式判断：只说明哪些板块受影响、方向如何，不要点名个股、不要预测点位
 5) 直接输出，不要前置寒暄。`, strings.Join(lines, "\n"))
 	return LLMSummarizeWithSource(ctx, s.llmProvider, s.name+"-us-close", prompt, "thinking", 50*time.Second)
+}
+
+// ── us_overnight: 中国白天美股夜盘快照（挂在 A 股收盘简报里）──
+
+func (s *MarketBriefingSource) fetchUSOvernight(parent context.Context) ([]*model.Message, error) {
+	if !usWeekday(time.Now()) {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(parent, 90*time.Second)
+	defer cancel()
+
+	nightLines := s.fetchQuotesBlock(ctx, []string{"ES=F", "NQ=F", "USDCNH=X", "GC=F", "CL=F"})
+	extLines := s.fetchExtendedLines(ctx, []string{"SPY", "QQQ", "KWEB", "FXI"}, "夜盘")
+	mapping := s.ashareMappingLines(ctx)
+	if len(nightLines) == 0 && len(extLines) == 0 && len(mapping) == 0 {
+		return nil, nil
+	}
+	var b strings.Builder
+	b.WriteString("── 夜盘期货与汇率 ──\n")
+	for _, line := range nightLines {
+		b.WriteString(line + "\n")
+	}
+	if len(extLines) > 0 {
+		b.WriteString("\n── ETF 夜盘/盘前 ──\n")
+		for _, line := range extLines {
+			b.WriteString(line + "\n")
+		}
+	}
+	if len(mapping) > 0 {
+		b.WriteString("\n── 对明日 A 股映射（仅方向参考）──\n")
+		for _, line := range mapping {
+			b.WriteString(line + "\n")
+		}
+	}
+	b.WriteString("\n注：个股 Blue Ocean 夜盘不在行情源覆盖内，用期货与 ETF 代理。\n")
+
+	now := time.Now()
+	msg := &model.Message{
+		Type:       model.TypeAnalysis,
+		ID:         fmt.Sprintf("us_overnight_%s", now.In(newYorkLocation()).Format("20060102")),
+		Title:      fmt.Sprintf("🌃 美股夜盘 · %s", now.In(newYorkLocation()).Format("01-02")),
+		Content:    b.String(),
+		Source:     s.name,
+		SourceType: "market-briefing",
+		CreateTime: now,
+		FetchTime:  now,
+		Tags:       []string{"美股", "夜盘", "映射"},
+	}
+	msg.SetMetadata("display_source", "美股夜盘")
+	return []*model.Message{msg}, nil
+}
+
+// ── 盘前/盘后/夜盘扩展时段报价（Nasdaq 公开接口，失败静默降级）──
+
+var spdrSectorSymbols = []string{"XLK", "XLF", "XLE", "XLV", "XLY", "XLP", "XLI", "XLU", "XLB", "XLRE", "XLC"}
+
+var spdrSectorNames = map[string]string{
+	"XLK": "科技", "XLF": "金融", "XLE": "能源", "XLV": "医疗", "XLY": "可选消费",
+	"XLP": "必需消费", "XLI": "工业", "XLU": "公用", "XLB": "材料", "XLRE": "地产", "XLC": "通信",
+}
+
+type nasdaqQuotePayload struct {
+	Data struct {
+		MarketStatus string `json:"marketStatus"`
+		PrimaryData  struct {
+			LastSalePrice      string `json:"lastSalePrice"`
+			PercentageChange   string `json:"percentageChange"`
+			LastTradeTimestamp string `json:"lastTradeTimestamp"`
+		} `json:"primaryData"`
+		SecondaryData struct {
+			LastSalePrice string `json:"lastSalePrice"`
+		} `json:"secondaryData"`
+	} `json:"data"`
+}
+
+func (s *MarketBriefingSource) fetchExtendedLines(ctx context.Context, symbols []string, label string) []string {
+	lines := make([]string, len(symbols))
+	var wg sync.WaitGroup
+	for i, sym := range symbols {
+		wg.Add(1)
+		go func(i int, sym string) {
+			defer wg.Done()
+			price, changePct, status, ok := fetchNasdaqExtended(ctx, sym)
+			if !ok {
+				return
+			}
+			sessionLabel := label
+			switch strings.ToLower(status) {
+			case "pre-market":
+				sessionLabel = "盘前"
+			case "after-hours":
+				sessionLabel = "盘后"
+			}
+			icon := "🔹"
+			if changePct > 0.05 {
+				icon = "🟢"
+			} else if changePct < -0.05 {
+				icon = "🔴"
+			}
+			lines[i] = fmt.Sprintf("%s %s %-5s %.2f (%+.2f%%)", icon, sessionLabel, sym, price, changePct)
+		}(i, sym)
+	}
+	wg.Wait()
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+func fetchNasdaqExtended(ctx context.Context, symbol string) (float64, float64, string, bool) {
+	assetClass := "etf"
+	endpoint := fmt.Sprintf("https://api.nasdaq.com/api/quote/%s/info?assetclass=%s", symbol, assetClass)
+	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
+	if err != nil {
+		return 0, 0, "", false
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120 Safari/537.36")
+	req.Header.Set("Accept", "application/json")
+	client := &http.Client{Timeout: 6 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, 0, "", false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, 0, "", false
+	}
+	var payload nasdaqQuotePayload
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return 0, 0, "", false
+	}
+	price := parseMoney(payload.Data.PrimaryData.LastSalePrice)
+	prev := parseMoney(payload.Data.SecondaryData.LastSalePrice)
+	if price <= 0 || prev <= 0 || price == prev {
+		return 0, 0, "", false
+	}
+	change := parsePercent(payload.Data.PrimaryData.PercentageChange)
+	if change == 0 && price != prev {
+		change = (price - prev) / prev * 100
+	}
+	return price, change, payload.Data.MarketStatus, true
+}
+
+func parseMoney(value string) float64 {
+	value = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(value), "$"))
+	value = strings.ReplaceAll(value, ",", "")
+	v, _ := strconv.ParseFloat(value, 64)
+	return v
+}
+
+func parsePercent(value string) float64 {
+	value = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(value), "%"))
+	value = strings.TrimPrefix(value, "+")
+	v, _ := strconv.ParseFloat(value, 64)
+	return v
+}
+
+func (s *MarketBriefingSource) quoteChanges(ctx context.Context, symbols []string) map[string]float64 {
+	changes := make(map[string]float64, len(symbols))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, sym := range symbols {
+		wg.Add(1)
+		go func(sym string) {
+			defer wg.Done()
+			q, err := s.marketService.GetMarketQuote(ctx, sym)
+			if err != nil || q == nil {
+				return
+			}
+			mu.Lock()
+			changes[sym] = q.ChangePercent
+			mu.Unlock()
+		}(sym)
+	}
+	wg.Wait()
+	return changes
+}
+
+func summarizeSectors(changes map[string]float64) []string {
+	type row struct {
+		symbol string
+		change float64
+	}
+	rows := make([]row, 0, len(changes))
+	for sym, change := range changes {
+		rows = append(rows, row{sym, change})
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].change > rows[j].change })
+	format := func(rows []row) string {
+		parts := make([]string, 0, len(rows))
+		for _, r := range rows {
+			name := spdrSectorNames[r.symbol]
+			if name == "" {
+				name = r.symbol
+			}
+			parts = append(parts, fmt.Sprintf("%s %+.2f%%", name, r.change))
+		}
+		return strings.Join(parts, " · ")
+	}
+	top := rows
+	if len(top) > 3 {
+		top = top[:3]
+	}
+	bottom := rows
+	if len(bottom) > 3 {
+		bottom = bottom[len(bottom)-3:]
+		for i, j := 0, len(bottom)-1; i < j; i, j = i+1, j-1 {
+			bottom[i], bottom[j] = bottom[j], bottom[i]
+		}
+	}
+	return []string{"领涨：" + format(top), "领跌：" + format(bottom)}
+}
+
+// ashareMappingLines 把美股隔夜锚点映射到 A 股/港股板块方向；只给条件式方向，不点名个股。
+func (s *MarketBriefingSource) ashareMappingLines(ctx context.Context) []string {
+	changes := s.quoteChanges(ctx, []string{"^IXIC", "SOXX", "KWEB", "CL=F", "GC=F", "HG=F", "USDCNH=X", "^TNX"})
+	type rule struct {
+		symbol    string
+		threshold float64
+		label     string
+		up        string
+		down      string
+	}
+	rules := []rule{
+		{"^IXIC", 0.5, "纳指", "创业板/科创、AI 算力情绪偏暖", "创业板/科创、AI 算力承压"},
+		{"SOXX", 0.8, "费城半导体", "A 股半导体/设备/PCB 偏暖", "A 股半导体/设备/PCB 承压"},
+		{"KWEB", 0.8, "中概", "港股互联网、A 股相关映射偏暖", "港股互联网、A 股相关映射承压"},
+		{"CL=F", 1.5, "原油", "石油石化/油服偏强", "石油石化/油服偏弱"},
+		{"GC=F", 0.8, "黄金", "黄金股偏强", "黄金股偏弱"},
+		{"HG=F", 1.0, "铜", "有色/铜产业链偏强", "有色/铜产业链偏弱"},
+		{"USDCNH=X", 0.2, "美元/离岸人民币", "人民币走弱，出口链相对受益、北向承压", "人民币走强，出口链承压、北向偏暖"},
+	}
+	var out []string
+	for _, r := range rules {
+		change, ok := changes[r.symbol]
+		if !ok || absFloat(change) < r.threshold {
+			continue
+		}
+		text := r.down
+		if change > 0 {
+			text = r.up
+		}
+		out = append(out, fmt.Sprintf("%s %+.2f%% → %s", r.label, change, text))
+	}
+	// 美债用收益率变化（百分点）判断，ChangePercent 是收益率的百分比，不适合直接比。
+	if q, err := dsyahoo.GetQuote(ctx, "^TNX"); err == nil && q != nil && q.PrevClose > 0 {
+		delta := q.Last - q.PrevClose
+		if delta >= 0.05 {
+			out = append(out, fmt.Sprintf("美债 10Y +%.2fpp → 成长股估值承压、红利相对占优", delta))
+		} else if delta <= -0.05 {
+			out = append(out, fmt.Sprintf("美债 10Y %.2fpp → 成长股估值压力缓解", delta))
+		}
+	}
+	if len(out) == 0 {
+		out = append(out, "各锚点变动均未达到阈值，暂无明确方向映射")
+	}
+	return out
+}
+
+func absFloat(v float64) float64 {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 // usWeekday 按美东日期判断是否美股交易日：北京周六对应美东周五（应推送），
@@ -1003,6 +1320,53 @@ func (s *MarketBriefingSource) usPreviewNarrative(
 
 // ── 工具方法 ──
 
+// quoteDisplayNames 让关键标的在简报里显示可读名称，而不是被截断的 Yahoo 全名。
+var quoteDisplayNames = map[string]string{
+	"ES=F": "标普期货", "NQ=F": "纳指期货", "YM=F": "道指期货",
+	"GC=F": "黄金", "CL=F": "原油", "HG=F": "铜",
+	"BTC-USD": "BTC", "USDCNH=X": "USD/CNH",
+	"KWEB": "中概KWEB", "FXI": "中国大盘FXI", "RSP": "等权RSP", "SOXX": "费半SOXX",
+	"SPY": "标普SPY", "QQQ": "纳指QQQ", "^GSPC": "标普500", "^IXIC": "纳斯达克",
+	"^DJI": "道指", "^VIX": "VIX", "DX-Y.NYB": "美元指数",
+}
+
+// fetchRatesBlock 用 Yahoo 原始报价取美债收益率：行情服务的 CBOE 适配器会把
+// ^TNX 放大 10 倍，直接显示会变成 48.59 这种值。
+func fetchRatesBlock(ctx context.Context) []string {
+	var out []string
+	for _, item := range []struct {
+		symbol string
+		name   string
+	}{{"^TNX", "美债10Y"}, {"^FVX", "美债5Y"}, {"^TYX", "美债30Y"}} {
+		q, err := dsyahoo.GetQuote(ctx, item.symbol)
+		if err != nil || q == nil || q.Last == 0 {
+			continue
+		}
+		delta := q.Last - q.PrevClose
+		icon := "🔹"
+		if delta > 0.001 {
+			icon = "🔴" // 收益率上行
+		} else if delta < -0.001 {
+			icon = "🟢"
+		}
+		out = append(out, fmt.Sprintf("%s %s: %.2f%% (%+.2fpp)", icon, item.name, q.Last, delta))
+	}
+	if q, err := dsyahoo.GetQuote(ctx, "DX-Y.NYB"); err == nil && q != nil && q.Last > 0 {
+		pct := 0.0
+		if q.PrevClose > 0 {
+			pct = (q.Last - q.PrevClose) / q.PrevClose * 100
+		}
+		icon := "🔹"
+		if pct > 0.05 {
+			icon = "🟢"
+		} else if pct < -0.05 {
+			icon = "🔴"
+		}
+		out = append(out, fmt.Sprintf("%s 美元指数: %.2f (%+.2f%%)", icon, q.Last, pct))
+	}
+	return out
+}
+
 // fetchQuotesBlock 批量获取行情，返回格式化行
 func (s *MarketBriefingSource) fetchQuotesBlock(ctx context.Context, symbols []string) []string {
 	// 并发拉取：串行时末位符号(如 BTC-USD)会因共享 ctx 超时被饿死。
@@ -1026,6 +1390,9 @@ func (s *MarketBriefingSource) fetchQuotesBlock(ctx context.Context, symbols []s
 			}
 
 			name := q.Name
+			if alias, ok := quoteDisplayNames[sym]; ok {
+				name = alias
+			}
 			if name == "" {
 				name = sym
 			}

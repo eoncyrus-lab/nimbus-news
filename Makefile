@@ -8,7 +8,7 @@
 # ============================================
 
 .PHONY: help init build-native run test vet deploy-vps install-mac uninstall-mac \
-        mac-bootstrap mac-restart mac-status mac-logs dump-config \
+        mac-bootstrap mac-restart mac-status mac-logs dump-config config-diff \
         backup restore python-deps dev-backend dev-frontend health smoke-longbridge
 
 .DEFAULT_GOAL := help
@@ -35,6 +35,7 @@ help:
 	@echo ""
 	@echo "$(GREEN)构建:$(NC)"
 	@echo "  make init           - 从模板生成本地配置/环境变量"
+	@echo "  make config-diff    - 对比真实配置与模板（CONFIG=...）"
 	@echo "  make dump-config    - 生成 source-dump 用的 config.dump.yaml"
 	@echo "  make build-native   - go build -o bin/platform ./cmd/platform"
 	@echo "  make test           - go test ./..."
@@ -64,6 +65,11 @@ init:
 # source-dump 的本地配置从模板生成，避免和 config.platform.yaml.example 漂移。
 dump-config:
 	@if [ -x .venv/bin/python ]; then .venv/bin/python scripts/make_dump_config.py; else $(PYTHON) scripts/make_dump_config.py; fi
+
+# 模板改了不会自动进真实配置；部署前先看差异，再决定合并哪些项。
+config-diff:
+	@test -f "$(CONFIG)" || { echo "$(RED)缺少 $(CONFIG)$(NC)"; exit 1; }
+	@if [ -x .venv/bin/python ]; then .venv/bin/python scripts/diff_config.py "$(CONFIG)"; else $(PYTHON) scripts/diff_config.py "$(CONFIG)"; fi
 
 build-native:
 	@echo "$(BLUE)>>> go build platform...$(NC)"

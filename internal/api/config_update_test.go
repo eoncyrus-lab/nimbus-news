@@ -190,12 +190,13 @@ func TestSessionBriefingSourcesConfigured(t *testing.T) {
 	}
 	want := []struct {
 		name    string
-		sched   string
+		sched   []string
 		session string
 	}{
-		{"session-morning", "09:00", "morning"},
-		{"session-close", "16:10", "close"},
-		{"session-us", "21:00", "us"},
+		{"session-morning", []string{"09:20", "09:40", "11:35", "15:05"}, "morning"},
+		{"session-close", []string{"16:10"}, "close"},
+		{"session-us", []string{"21:00"}, "us"},
+		{"session-week", []string{"20:00"}, "week"},
 	}
 	for _, w := range want {
 		src, ok := byName[w.name]
@@ -205,15 +206,20 @@ func TestSessionBriefingSourcesConfigured(t *testing.T) {
 		if src.Type != "session" {
 			t.Fatalf("%s type=%s", w.name, src.Type)
 		}
-		if len(src.Schedule) != 1 || src.Schedule[0] != w.sched {
-			t.Fatalf("%s schedule=%v", w.name, src.Schedule)
+		if len(src.Schedule) != len(w.sched) {
+			t.Fatalf("%s schedule=%v want %v", w.name, src.Schedule, w.sched)
+		}
+		for i := range w.sched {
+			if src.Schedule[i] != w.sched[i] {
+				t.Fatalf("%s schedule=%v want %v", w.name, src.Schedule, w.sched)
+			}
 		}
 		if session, _ := src.Options["session"].(string); session != w.session {
 			t.Fatalf("%s session=%v", w.name, src.Options["session"])
 		}
 		members, _ := src.Options["members"].([]interface{})
-		if len(members) < 2 {
-			t.Fatalf("%s members=%d, want at least 2", w.name, len(members))
+		if len(members) < 1 {
+			t.Fatalf("%s members=%d, want at least 1", w.name, len(members))
 		}
 		if src.Routing != nil {
 			t.Fatalf("%s must not carry typed routing", w.name)

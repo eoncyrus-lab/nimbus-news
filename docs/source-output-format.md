@@ -44,7 +44,8 @@ go run ./cmd/source-dump -config /tmp/nimbus-dump/config.yaml \
 | fed-press | rss | ok | 0 | 1.8s | 同上，低频官方源 |
 | bloomberg-markets | rss | ok | 17 | 2.4s | 纯英文摘要 |
 | bloomberg-economics | rss | ok | 8 | 1.6s | 纯英文摘要 |
-| forexlive-breaking | rss | ok | 25 | 1.4s | 正文最长 1 万字符 |
+| forexlive-breaking | rss | ok | 25 | 1.4s | 长文已按句/列表切成分点 |
+| jin10 | jin10 | ok | 17 | 0.1s | 只留 important/宏观条目 |
 | wallstcn-hk | wallstcn | ok | 7 | 0.7s | 自带评分 |
 | guanfu-score | guanfu | ok | 1 | 36.4s | 50 币种历史，最慢 |
 | session-morning | session | ok | 1 | 7.5s | 行情 + 日历 |
@@ -173,7 +174,9 @@ Fed 等按 URL 映射，未知域名回落 `RSS`。
 ```
 
 - 两种形态：单条快讯（1–3 句）与“每日要闻汇总”（几十条要点拼接，可超 1 万字符）。
-- 汇总型正文必须靠 LLM 摘要或分段，直接推送会截断。
+- 配置 `format: "bullets"` 后，正文长度 ≥ `bullet_min_runes`（默认 400）时：
+  先保留 `<li>`/`<p>` 边界，再按中英文句末标点切分，输出 `- ` 分点；
+  单条短快讯保持原文。实测 11017 字符的亚太汇总切成 40+ 条要点。
 
 ## 4. 专用型
 
@@ -231,6 +234,27 @@ Fed 等按 URL 映射，未知域名回落 `RSS`。
 - `metadata` 是结构化读数，正文是给人看的摘要；`ai_interpreted=false` 表示规则生成。
 - 无 `display_source`，推送标题直接用 `title`。
 
+### 4.3 jin10（金十数据）
+
+```json
+{
+  "id": "a3f1…",
+  "type": "news",
+  "title": "央行开展5000亿元逆回购操作",
+  "content": "金十数据11月9日讯，中标利率1.50%。",
+  "content_runes": 28,
+  "link": "https://flash.jin10.com/detail/20261109163834903800",
+  "tags": ["中国", "宏观", "金十"],
+  "metadata": {"display_source": "金十数据", "important": 1},
+  "create_time": "2026-11-09T16:38:34+08:00"
+}
+```
+
+- 走公开 JSON API，每次约 20 条，按 `max_time` 翻页；默认 3 小时内最多 40 条。
+- 过滤：`important=1` 或命中宏观关键词才保留；个股公告类（公告/减持/解禁/业绩预告…）直接丢弃。
+- 标题优先取 `【】` 内的内容，没有则取第一句（≤60 字符）。
+- 实测 2 小时窗口 40 条上游快讯 → 17 条有效，宏观/央行/伊朗/原油为主。
+
 ## 5. 时段简报（session）
 
 一个时段只输出一条（超长时按 `max_chars`，默认 1800 分多条）。
@@ -248,7 +272,7 @@ ID 形如 `session_<session>_<YYYYMMDD>_<HHMM>_<i>`，标题 `<title> · MM-DD`�
 }
 ```
 
-### 5.1 morning（09:00）
+### 5.1 morning（09:20 / 09:40 / 11:35 / 15:05）
 
 | 成员 | 段落 | 数据 |
 |---|---|---|
@@ -258,6 +282,12 @@ ID 形如 `session_<session>_<YYYYMMDD>_<HHMM>_<i>`，标题 `<title> · MM-DD`�
 
 实测输出：行情 12 个标的 + 金银比 + 3 个汇率 + 美国 4 条/英国 1 条经济事件。
 dump 没有 digest store，所以“资讯摘要”段为空；线上会带该段和 digest 租约。
+
+盘中相位由 `preMarketSession()` 按北京时间判定：集合竞价（09:15–09:30）、开盘
+（09:30–10:00）、盘中（10:00–11:30）、午盘（11:30–13:00）、午后开盘（13:00–14:00）、
+尾盘（14:00–15:00）、收盘（15:00–15:30）、盘后（15:30 后）。`title_from_member: true`
+让合并消息标题跟随相位（⏰ 集合竞价 / 🔔 开盘 / 🌆 午盘 / 🌇 收盘行情），
+避免四个槽都叫“盘前全景”。每个槽都会重新租 digest，只带新到资讯。
 
 ### 5.2 close（16:10）
 

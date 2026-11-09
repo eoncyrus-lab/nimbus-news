@@ -223,8 +223,8 @@ func TestProductionTypedRoutingUsesNarrowCriticalPolicies(t *testing.T) {
 			}
 		}
 	}
-	if externalRouted != 8 {
-		t.Fatalf("typed external sources=%d, want 8 (7 RSS + wallstcn-hk)", externalRouted)
+	if externalRouted != 9 {
+		t.Fatalf("typed external sources=%d, want 9 (7 RSS + wallstcn-hk + jin10)", externalRouted)
 	}
 
 	// 价值投资口径：即时直推有每日预算，溢出进 news_aggregate 摘要。

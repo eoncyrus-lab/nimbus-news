@@ -250,9 +250,47 @@ sources:
       default: direct
     options:
       max_age_hours: 1
+      # 每日要闻汇总会把几十条快讯拼成上万字符的长文；按句切分成 "- " 分点，
+      # 短快讯（< bullet_min_runes）保持原样。
+      format: "bullets"
+      bullet_min_runes: 400
       tags: ["外汇", "宏观", "快讯"]
 
   # ── 中国 / AH ──
+
+  # 金十数据 7x24 快讯（公开 JSON API）：中文一手宏观/政策/商品快讯。
+  # 只保留 important=1 或命中宏观关键词的条目；个股公告类噪音在源内过滤。
+  - name: "jin10"
+    type: "jin10"
+    interval: 120
+    sinks: ["wechat-main", "discord-webhook"]
+    routing:
+      ai_policy: bypass
+      on_ai_failure: silent
+      critical_keywords:
+        - "央行"
+        - "美联储"
+        - "降准"
+        - "降息"
+        - "加息"
+        - "LPR"
+        - "非农"
+        - "CPI"
+        - "PPI"
+        - "关税"
+        - "制裁"
+        - "停火"
+        - "开战"
+        - "台海"
+        - "霍尔木兹"
+      direct: {max_per_day: 3, priority: 70}
+      digest: {max_per_day: 6, priority: 60, briefing_target: news_aggregate}
+      default: direct
+    options:
+      max_age_hours: 2
+      limit: 40
+      min_important: 1
+      tags: ["中国", "宏观", "金十"]
 
   # 华尔街见闻 7x24 快讯（2026-11-09 新增，补中国宏观与 AH 中文覆盖缺口）
   # 频道实测：hk-stock-channel 21 条/日，含中国 CPI/PPI、部委表态、港股监管，噪声低；
@@ -318,18 +356,22 @@ sources:
     schedule: ["10:00"]
     sinks: ["wechat-main", "discord-webhook"]
 
-  # ── 时段简报（2026-11-09：8 个定时源合并为 3 条，按市场时段一次推全）──
-  # 每条消息 = 该时段的行情 + 宏观 + 日历 + 资讯摘要，成员由现有源类型组装。
-  # 成员失败只降级该段，不影响整条简报。
+  # ── 时段简报（2026-11-09：8 个定时源合并为按市场时段的 4 条）──
+  # 每条消息 = 该时段的行情 + 宏观 + 日历 + 事件 + 资讯摘要，成员由现有源类型组装。
+  # 盘中多槽（竞价/开盘/午盘/收盘），周度版次周日 20:00；成员失败只降级该段。
 
-  # A 股盘前 09:00：隔夜美股/AH/商品行情 + 今日数据 + 昨夜资讯摘要
+  # A 股盘中多槽：竞价 09:20 / 开盘 09:40 / 午盘 11:35 / 收盘 15:05。
+  # 每个槽都重新租 digest（只取新到资讯），所以不是简单重复上一槽。
+  # 盘后竞价 15:30 只影响科创板/创业板固定价交易，价值低且 16:10 有完整收盘报告，故不单独设槽。
   - name: "session-morning"
     type: "session"
-    schedule: ["09:00"]
+    schedule: ["09:20", "09:40", "11:35", "15:05"]
     sinks: ["wechat-main", "discord-webhook"]
     options:
       session: "morning"
       title: "🌅 盘前全景"
+      # 标题跟随行情成员相位（集合竞价/开盘/盘中/午盘/收盘），避免所有槽都叫“盘前全景”。
+      title_from_member: true
       members:
         - label: "隔夜与盘前"
           type: "market-briefing"
@@ -343,6 +385,11 @@ sources:
             command: "python3 scripts/econ_calendar.py --days 1"
             timeout: 120
             push_output: true
+        - label: "事件"
+          type: "events"
+          options:
+            window_hours: 12
+            limit: 6
         - label: "资讯摘要"
           type: "market-briefing"
           options:
@@ -368,6 +415,11 @@ sources:
             sections: ["sentiment", "hot_sector", "capital_flow", "lhb"]
             python_cmd: "python3"
             scripts_dir: "scripts"
+        - label: "事件"
+          type: "events"
+          options:
+            window_hours: 8
+            limit: 8
         - label: "资讯摘要"
           type: "market-briefing"
           options:
@@ -436,11 +488,49 @@ sources:
             python_cmd: "python3"
             scripts_dir: "scripts"
 
+  # 周度版次：调度器只支持 HH:MM，所以每天 20:00 触发，session=week 内部只在周日产出。
+  # 内容为本周进入 instant/defer 的事件（events 成员直接读事件引擎，不新增脚本）。
+  - name: "session-week"
+    type: "session"
+    schedule: ["20:00"]
+    sinks: ["wechat-main", "discord-webhook"]
+    options:
+      session: "week"
+      title: "🗓 周度版次"
+      members:
+        - label: "本周事件"
+          type: "events"
+          options:
+            window_hours: 168
+            limit: 20
+            min_score: 40
+
   # 财报日历已删除（2026-11-09）：价值投资口径下财报不进 news 推送。
 
   # 机构 13F 追踪 —— 已关闭 (2026-07-31): 非季末无产出(EDGAR 仅季度披露)
   # 超级投资者 13F 追踪 —— 已关闭 (2026-07-31): 28s 跑出 0 字节(非季末无新披露)
   # global-macro 已移除(2026-07-18): 内容合并至收盘简报
+
+# ── 事件模型（Story/Thread/Decision）────────────────────────────────────────
+# off    = 关闭（零开销）
+# shadow = 只记录身份归并、打分与来源贡献，不改变推送（建议先跑 1–2 周核对误判）
+# active = 判定接管 typed routing：instant 直推、defer 进 news_aggregate、其余丢弃
+#          （active 会改变线上推送，切换前先用 shadow 数据核对预算与误判）
+events:
+  mode: "shadow"
+  location: "Asia/Shanghai"
+  quiet_start: "23:30"
+  quiet_end: "07:00"
+  daily_budget: 6
+  daily_hard_limit: 8
+  class_reservation: 2
+  instant_threshold: 75
+  defer_threshold: 40
+  quiet_bypass_score: 85
+  story_window_hours: 24
+  thread_window_hours: 12
+  upgrade_delta: 15
+  retention_days: 30
 
 # ── 运行角色 ────────────────────────────────────────────────────────────────
 # active  = 唯一摄入/推送（VPS）

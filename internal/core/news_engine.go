@@ -11,6 +11,7 @@ import (
 
 	"github.com/Ricaardo/nimbus-os/news/internal/config"
 	"github.com/Ricaardo/nimbus-os/news/internal/digest"
+	"github.com/Ricaardo/nimbus-os/news/internal/event"
 	"github.com/Ricaardo/nimbus-os/news/internal/filter"
 	"github.com/Ricaardo/nimbus-os/news/internal/llm"
 	"github.com/Ricaardo/nimbus-os/news/internal/metrics"
@@ -58,6 +59,7 @@ type NewsEngine struct {
 	newsStore      *store.NewsStore
 	quoteStore     *store.QuoteStore
 	enhancer       *llm.NewsEnhancer
+	events         *event.Engine
 	router         *Router
 	mirrorChannels []string // 全量镜像渠道（追加到每个源的 channels）
 	role           string   // active|standby|admin：非 active 不启动源调度与投递
@@ -128,6 +130,7 @@ type NewsEngineConfig struct {
 	QuoteStore     *store.QuoteStore
 	Enhancer       *llm.NewsEnhancer
 	AsyncEval      *filter.AsyncEvaluator // 异步 AI 评估器（可选）
+	Events         *event.Engine          // Story/Thread/Decision 事件模型（可选）
 	Router         *Router
 	HealthConfig   source.HealthConfig
 	MirrorChannels []string // 全量镜像渠道（追加到每个源的 channels）
@@ -197,6 +200,7 @@ func NewNewsEngine(cfg NewsEngineConfig) (*NewsEngine, error) {
 		quoteStore:        cfg.QuoteStore,
 		enhancer:          cfg.Enhancer,
 		asyncEval:         cfg.AsyncEval,
+		events:            cfg.Events,
 		router:            cfg.Router,
 		mirrorChannels:    cfg.MirrorChannels,
 		role:              cfg.Role,
@@ -234,6 +238,15 @@ func NewNewsEngine(cfg NewsEngineConfig) (*NewsEngine, error) {
 		})
 
 		e.registerSourceHealth(srcCfg)
+	}
+
+	// 事件版次成员在源构造完成后注入只读视图（session 会向成员转发）。
+	if cfg.Events != nil {
+		for _, src := range e.sources {
+			if setter, ok := src.(source.EventReaderSetter); ok {
+				setter.SetEventReader(cfg.Events)
+			}
+		}
 	}
 
 	return e, nil
@@ -1094,6 +1107,11 @@ func (e *NewsEngine) GetNewsStore() *store.NewsStore {
 // GetHealthMonitor 获取健康监控器
 func (e *NewsEngine) GetHealthMonitor() *source.HealthMonitor {
 	return e.healthMonitor
+}
+
+// EventEngine 返回事件模型引擎（未启用时为 nil）。
+func (e *NewsEngine) EventEngine() *event.Engine {
+	return e.events
 }
 
 // SetHealthNotifier 设置健康通知器

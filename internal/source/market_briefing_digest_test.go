@@ -221,7 +221,7 @@ func TestAggregateEmptyEverythingReturnsNoMessages(t *testing.T) {
 	}
 }
 
-// TestPreMarketSessionMapping verifies the four trading sessions map correctly
+// TestPreMarketSessionMapping verifies the intraday phases map correctly
 // for Asia/Shanghai timezone boundary hours.
 func TestPreMarketSessionMapping(t *testing.T) {
 	shanghai := time.FixedZone("Asia/Shanghai", 8*60*60)
@@ -229,17 +229,26 @@ func TestPreMarketSessionMapping(t *testing.T) {
 		hour, min int
 		want      string
 	}{
-		{9, 15, "pre_market"},
-		{9, 30, "pre_market"},
-		{10, 0, "morning_close"},
-		{11, 35, "morning_close"},
-		{11, 59, "morning_close"},
-		{12, 0, "afternoon_open"},
-		{13, 5, "afternoon_open"},
+		{9, 0, "pre_market"},
+		{9, 14, "pre_market"},
+		{9, 15, "auction"},
+		{9, 25, "auction"},
+		{9, 30, "open"},
+		{9, 59, "open"},
+		{10, 0, "morning_session"},
+		{11, 29, "morning_session"},
+		{11, 30, "midday"},
+		{11, 59, "midday"},
+		{12, 59, "midday"},
+		{13, 0, "afternoon_open"},
 		{13, 59, "afternoon_open"},
-		{14, 0, "afternoon_close"},
+		{14, 0, "late_session"},
+		{14, 59, "late_session"},
 		{15, 0, "afternoon_close"},
-		{15, 30, "afternoon_close"},
+		{15, 5, "afternoon_close"},
+		{15, 29, "afternoon_close"},
+		{15, 30, "after_hours"},
+		{16, 10, "after_hours"},
 	}
 	for _, c := range cases {
 		ts := time.Date(2026, 8, 3, c.hour, c.min, 0, 0, shanghai)

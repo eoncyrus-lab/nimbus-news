@@ -261,7 +261,9 @@ Section 契约：`Render(ctx, window) (Block, error)`，独立超时、可 optio
 | 华尔街见闻 `hk-stock-channel` | 200，21 条/日，score 1/2/3 = 68%/20%/12% | **采用**：中国 CPI/PPI、交通运输部、港股监管都在，噪声低 |
 | 华尔街见闻 `a-stock-channel` | 200，178 条/日，盘中个股异动为主 | 不接（需要时可加 channels） |
 | 华尔街见闻 `global-channel` | 200，275 条/日 | 不接（全量，噪声最高） |
-| 财联社 API | 404 | 不可用 |
+| 财联社 API | 404（签名接口） | 不可用 |
+| 金十数据 flash API | 200，2h 40 条 → 宏观过滤后 17 条 | **采用**：`type: jin10`，中文一手宏观/政策/商品，重复度低于华尔街见闻 |
+| 新浪财经 7x24 | 200，可用 | 备选：A 股个股快讯占比高，暂不接 |
 | 央行 / 统计局 / gov.cn / 证监会 | 200（需跟随 301/302） | P1 备选：内容是权威原文，但比快讯慢，边际故事≈0 |
 | 巨潮公告 / 港交所披露 | 200 | P1 备选：属于持仓公告监控，不是宏观新闻，不进 news |
 
@@ -276,6 +278,7 @@ Section 契约：`Render(ctx, window) (Block, error)`，独立超时、可 optio
 | bwe-tradfi | 120s | wire | 直推 ≤3 + critical，溢出 digest | ~6 |
 | forexlive-breaking | 120s | 数据、央行 | 直推 ≤3 + critical，溢出 digest | ~10 |
 | wallstcn-hk | 180s | 中国宏观、AH | 直推 ≤2 + critical，digest ≤6 | ~6（score≥2） |
+| jin10 | 120s | 中国宏观、政策、商品 | 直推 ≤3 + critical，digest ≤6 | ~50（过滤后） |
 | fed-press | 900s | 央行 | critical 直推 / archive | ~0.4 |
 | fed-speeches | 900s | 央行/分析 | digest ≤2 | ~0.6 |
 | bloomberg-markets | 300s | 公司、体制 | digest ≤3 | ~58（取 3） |
@@ -297,11 +300,12 @@ Section 契约：`Render(ctx, window) (Block, error)`，独立超时、可 optio
 | 5 | bloomberg-markets | rss | 300s | digest ≤3 | ~58/日 |
 | 6 | bloomberg-economics | rss | 300s | digest ≤2 | ~6/日 |
 | 7 | forexlive-breaking | rss | 120s | direct ≤3 / digest | ~10/日 |
-| 8 | wallstcn-hk | wallstcn | 180s | direct ≤2 / digest ≤6 | ~6/日 |
-| 9 | guanfu-score | guanfu | 10:00 | direct | 1/日 |
-| 10 | session-morning | session | 09:00 | direct | 1/日 |
-| 11 | session-close | session | 16:10 | direct | 1/日 |
-| 12 | session-us | session | 21:00 | direct | 1/日 |
+| 8 | jin10 | jin10 | 120s | direct ≤3 / digest ≤6 | ~50/日（宏观过滤后） |
+| 9 | wallstcn-hk | wallstcn | 180s | direct ≤2 / digest ≤6 | ~6/日 |
+| 10 | guanfu-score | guanfu | 10:00 | direct | 1/日 |
+| 11 | session-morning | session | 09:20/09:40/11:35/15:05 | direct | 4/日 |
+| 12 | session-close | session | 16:10 | direct | 1/日 |
+| 13 | session-us | session | 21:00 | direct | 1/日 |
 
 渠道：`wechat-main`、`discord-webhook`（3 个 webhook 轮询）；`mirror_channels: ["wechat-main"]`。
 
@@ -311,7 +315,7 @@ Section 契约：`Render(ctx, window) (Block, error)`，独立超时、可 optio
 
 | 时段 | 时间 | 成员 | 内容 |
 |---|---|---|---|
-| session-morning | 09:00 | pre_market（`calendar: false`）+ econ_calendar + aggregate（`include_blockbeats: false`） | 隔夜美股/AH/商品/金银比/汇率 + 今日数据 + 昨夜资讯摘要 + AI 盘前研判 |
+| session-morning | 09:20 / 09:40 / 11:35 / 15:05 | pre_market（`calendar: false`）+ econ_calendar + aggregate（`include_blockbeats: false`） | 隔夜/实时行情 + 今日数据 + 新增资讯摘要 + AI 相位研判；标题随竞价/开盘/午盘/收盘变化 |
 | session-close | 16:10 | closing（`sections: [sentiment, hot_sector, capital_flow, lhb]`）+ aggregate | 指数/涨跌家数/成交额/情绪 + 热门板块 + 两融/主力资金 + 龙虎榜 + **A/H 恐慌温度** + 全天资讯摘要 + AI 复盘 |
 | session-us | 21:00 | us_preview（`include_fedwatch: false`）+ us_macro_report + econ_calendar + aggregate | 美股行情/VIX 期限 + FRED/流动性/FedWatch/未来发布 + 明日数据 + 资讯摘要 + AI 前瞻 |
 
@@ -436,9 +440,18 @@ observability: { metrics: true }   # 无 notify_channels
 | 脚本超时 | `scripts/utils.py` 给 requests 注入默认 (5s/15s) 超时，避免上游挂起拖死收盘段 |
 | 输出容错 | 脚本 stdout 带 banner 时按括号配对截取 JSON，NaN/Infinity 归一化；wallstcn 标签去重；Bloomberg/ForexLive 署名修正 |
 | 收盘段修复 | 全市场快照进程内复用（59 页只翻一次）、脚本网络超时、sentiment 超时 3 分钟；炸板率/成交额单位修正（此前 4490%、0 亿） |
+| 快讯可读性 | forexlive 长文保留 `<li>/<p>` 边界并按句切分为 `- ` 分点（11017 字符 → 40+ 条）；短快讯不变 |
+| 中文源补充 | 新增 `jin10`（金十数据公开 JSON API）：important/宏观关键词过滤，个股公告噪音源内丢弃，实测 2h 40 条 → 17 条 |
+| 盘中多槽 | session-morning 改为 09:20/09:40/11:35/15:05 四槽；`preMarketSession` 细分竞价/开盘/盘中/午盘/午后/尾盘/盘后；标题随相位变化，每槽重新租 digest |
+| P1 影子 | `internal/event`：Story 身份（URL / Jaccard / 数字+实体）、Thread、可解释 Decision；shadow 观察全部 typed-routing 消息，不改推送 |
+| P2 车道接管 | `events.mode=active` 时 instant→直推、defer→`news_aggregate`、archive/silent 丢弃；预算 6/8、类别保留 2、静默 23:30–07:00、Thread 每日 1 条；未校准前默认 shadow |
+| P3 版次 | session 支持 `events` 成员（读事件引擎渲染 instant/defer）；新增 `session-week` 周日 20:00 周度版次；instant 事件可在版次中回看 |
+| source_contribution | 按日按源统计 items/new/duplicates/instant/defer/archive/freshness；API `/api/events/contributions` 输出冗余率、信号率、新鲜度中位数 |
 
-### 仍待实施（计划项，未开工）
+### 切换前校准（实现已完成，未改线上模式）
 
-- **P1–P3 事件模型**（Story/Thread/Decision/Edition）：当前仍是 `digest` 主题桶 + 会话简报的组合形态；
-  该迁移涉及身份归并、打分预算、版次渲染的整体替换，按 §8 独立排期，不与本次修复混合。
-- 贡献报表 `source_contribution`（§6.1 的月度重算）。
+- 模板默认 `events.mode: "shadow"`；`active` 会改变推送，切之前用 `/api/events/decisions`
+  与 `/api/events/contributions` 跑 1–2 周，核对预算消耗、跨源归并和误判。
+- 身份归并目前是 URL + 标题 token + 数字/实体，没有语义向量；实体表为手工维护。
+- 预算（6/8）、阈值（75/40）、静默穿透（85）来自先验值，尚未按真实流量校准。
+- 设计与指标口径见 [event-model.md](event-model.md)。

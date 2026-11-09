@@ -3,8 +3,41 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 )
+
+// ParseClockRange 把 "23:30"/"07:00" 解析成当日分钟数；空值使用默认 23:30–07:00。
+func ParseClockRange(start, end string) (int, int, error) {
+	parse := func(value, fallback string) (int, error) {
+		if strings.TrimSpace(value) == "" {
+			value = fallback
+		}
+		parts := strings.Split(value, ":")
+		if len(parts) != 2 {
+			return 0, fmt.Errorf("invalid clock %q (want HH:MM)", value)
+		}
+		hour, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+		if err != nil || hour < 0 || hour > 23 {
+			return 0, fmt.Errorf("invalid hour in %q", value)
+		}
+		minute, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+		if err != nil || minute < 0 || minute > 59 {
+			return 0, fmt.Errorf("invalid minute in %q", value)
+		}
+		return hour*60 + minute, nil
+	}
+	startMinutes, err := parse(start, "23:30")
+	if err != nil {
+		return 0, 0, err
+	}
+	endMinutes, err := parse(end, "07:00")
+	if err != nil {
+		return 0, 0, err
+	}
+	return startMinutes, endMinutes, nil
+}
 
 // PlatformConfig 统一平台配置
 // 运行角色：active 唯一摄入/推送；standby 只读常驻；admin 只读 + 手动 FetchOnly。
@@ -30,6 +63,7 @@ type PlatformConfig struct {
 	Store        PlatformStoreConfig `yaml:"store"`
 	SourceHealth SourceHealthConfig  `yaml:"source_health"`
 	Alert        AlertConfig         `yaml:"alert"`
+	Events       EventsConfig        `yaml:"events"`
 
 	// MirrorChannels 把所有通过过滤的新闻额外镜像到这些渠道（全量副本）。
 	// 等价于给每个源的 channels 追加这些渠道。
@@ -38,6 +72,25 @@ type PlatformConfig struct {
 	// FileFingerprint fences reload previews against concurrent disk changes.
 	// It is runtime metadata and is never serialized or returned by JSON APIs.
 	FileFingerprint string `yaml:"-" json:"-"`
+}
+
+// EventsConfig 事件模型（Story/Thread/Decision）配置。
+// mode=off 完全关闭；shadow 只记录判定不改推送；active 由事件车道接管 typed routing。
+type EventsConfig struct {
+	Mode              string  `yaml:"mode"` // off|shadow|active
+	Location          string  `yaml:"location"`
+	QuietStart        string  `yaml:"quiet_start"` // "23:30"
+	QuietEnd          string  `yaml:"quiet_end"`   // "07:00"
+	DailyBudget       int     `yaml:"daily_budget"`
+	DailyHardLimit    int     `yaml:"daily_hard_limit"`
+	ClassReservation  int     `yaml:"class_reservation"`
+	InstantThreshold  float64 `yaml:"instant_threshold"`
+	DeferThreshold    float64 `yaml:"defer_threshold"`
+	QuietBypassScore  float64 `yaml:"quiet_bypass_score"`
+	StoryWindowHours  int     `yaml:"story_window_hours"`
+	ThreadWindowHours int     `yaml:"thread_window_hours"`
+	UpgradeDelta      float64 `yaml:"upgrade_delta"`
+	RetentionDays     int     `yaml:"retention_days"`
 }
 
 // AlertConfig 告警系统配置
@@ -180,6 +233,20 @@ func (c *PlatformConfig) Validate() error {
 	default:
 		return fmt.Errorf("runtime.role must be one of active/standby/admin, got %q", c.Runtime.Role)
 	}
+	switch c.Events.Mode {
+	case "", "off", "shadow", "active":
+	default:
+		return fmt.Errorf("events.mode must be one of off/shadow/active, got %q", c.Events.Mode)
+	}
+	if c.Events.Mode != "" && c.Events.Mode != "off" {
+		if _, _, err := ParseClockRange(c.Events.QuietStart, c.Events.QuietEnd); err != nil {
+			return fmt.Errorf("events quiet hours: %w", err)
+		}
+		if c.Events.DeferThreshold > 0 && c.Events.InstantThreshold > 0 &&
+			c.Events.DeferThreshold >= c.Events.InstantThreshold {
+			return fmt.Errorf("events.defer_threshold must be < instant_threshold")
+		}
+	}
 	if c.Store.News.MaxItems <= 0 || c.Store.News.MaxItems > maxNewsStoreMaxItems {
 		return fmt.Errorf("store.news.max_items must be between 1 and %d", maxNewsStoreMaxItems)
 	}
@@ -212,6 +279,50 @@ func (c *PlatformConfig) setDefaults() {
 	}
 	if c.Server.Name == "" {
 		c.Server.Name = "investment-platform"
+	}
+
+	// 事件模型默认值
+	if c.Events.Mode == "" {
+		c.Events.Mode = "off"
+	}
+	if c.Events.Location == "" {
+		c.Events.Location = "Asia/Shanghai"
+	}
+	if c.Events.QuietStart == "" {
+		c.Events.QuietStart = "23:30"
+	}
+	if c.Events.QuietEnd == "" {
+		c.Events.QuietEnd = "07:00"
+	}
+	if c.Events.DailyBudget <= 0 {
+		c.Events.DailyBudget = 6
+	}
+	if c.Events.DailyHardLimit <= 0 {
+		c.Events.DailyHardLimit = 8
+	}
+	if c.Events.ClassReservation <= 0 {
+		c.Events.ClassReservation = 2
+	}
+	if c.Events.InstantThreshold <= 0 {
+		c.Events.InstantThreshold = 75
+	}
+	if c.Events.DeferThreshold <= 0 {
+		c.Events.DeferThreshold = 40
+	}
+	if c.Events.QuietBypassScore <= 0 {
+		c.Events.QuietBypassScore = 85
+	}
+	if c.Events.StoryWindowHours <= 0 {
+		c.Events.StoryWindowHours = 24
+	}
+	if c.Events.ThreadWindowHours <= 0 {
+		c.Events.ThreadWindowHours = 12
+	}
+	if c.Events.UpgradeDelta <= 0 {
+		c.Events.UpgradeDelta = 15
+	}
+	if c.Events.RetentionDays <= 0 {
+		c.Events.RetentionDays = 30
 	}
 
 	// 源默认配置

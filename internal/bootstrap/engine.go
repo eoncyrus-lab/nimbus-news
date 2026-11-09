@@ -12,6 +12,7 @@ import (
 	"github.com/Ricaardo/nimbus-os/news/internal/config"
 	"github.com/Ricaardo/nimbus-os/news/internal/core"
 	"github.com/Ricaardo/nimbus-os/news/internal/digest"
+	"github.com/Ricaardo/nimbus-os/news/internal/event"
 	"github.com/Ricaardo/nimbus-os/news/internal/filter"
 	"github.com/Ricaardo/nimbus-os/news/internal/llm"
 	"github.com/Ricaardo/nimbus-os/news/internal/source"
@@ -64,8 +65,14 @@ func InitRouter(
 		NotifyChannels:     cfg.SourceHealth.NotifyChannels,
 	}
 
+	eventEngine, err := buildEventEngine(cfg, st)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	engine, err := core.NewNewsEngine(core.NewsEngineConfig{
 		Sources:        sourceConfigs,
+		Events:         eventEngine,
 		FilterChain:    filterChain,
 		Store:          st,
 		DigestStore:    digestStore,
@@ -93,6 +100,46 @@ func InitRouter(
 	}
 
 	return router, engine, nil
+}
+
+// buildEventEngine 按配置构造事件模型；mode=off 时返回 nil，不产生任何开销。
+func buildEventEngine(cfg *config.PlatformConfig, st store.Store) (*event.Engine, error) {
+	if cfg == nil || cfg.Events.Mode == "" || cfg.Events.Mode == "off" {
+		return nil, nil
+	}
+	quietStart, quietEnd, err := config.ParseClockRange(cfg.Events.QuietStart, cfg.Events.QuietEnd)
+	if err != nil {
+		return nil, fmt.Errorf("events quiet hours: %w", err)
+	}
+	eventStore := event.Store(event.NewMemoryStore())
+	storage := "memory"
+	if dbProvider, ok := st.(interface{ DB() *bolt.DB }); ok && dbProvider.DB() != nil {
+		eventStore = event.NewBoltEventStore(dbProvider.DB())
+		storage = "bolt"
+	} else {
+		slog.Warn("event model has no bolt store; state will not survive restart")
+	}
+	engine, err := event.NewEngine(event.Config{
+		Mode:              cfg.Events.Mode,
+		Location:          cfg.Events.Location,
+		QuietStart:        quietStart,
+		QuietEnd:          quietEnd,
+		DailyBudget:       cfg.Events.DailyBudget,
+		DailyHardLimit:    cfg.Events.DailyHardLimit,
+		ClassReservation:  cfg.Events.ClassReservation,
+		InstantThreshold:  cfg.Events.InstantThreshold,
+		DeferThreshold:    cfg.Events.DeferThreshold,
+		QuietBypassScore:  cfg.Events.QuietBypassScore,
+		StoryWindowHours:  cfg.Events.StoryWindowHours,
+		ThreadWindowHours: cfg.Events.ThreadWindowHours,
+		UpgradeDelta:      cfg.Events.UpgradeDelta,
+		RetentionDays:     cfg.Events.RetentionDays,
+	}, event.DefaultRules(), eventStore)
+	if err != nil {
+		return nil, fmt.Errorf("init event model: %w", err)
+	}
+	slog.Info("event model initialized", "mode", cfg.Events.Mode, "storage", storage)
+	return engine, nil
 }
 
 // InitAlert initializes the alert engine.

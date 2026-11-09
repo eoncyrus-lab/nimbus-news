@@ -21,9 +21,10 @@ func init() {
 const sessionDefaultMaxChars = 1800
 
 const (
-	sessionMorning = "morning" // A 股盘前
+	sessionMorning = "morning" // A 股盘中多槽
 	sessionClose   = "close"   // A 股收盘
 	sessionUS      = "us"      // 美盘前瞻
+	sessionWeek    = "week"    // 周度版次（周日 20:00）
 )
 
 type sessionMember struct {
@@ -35,14 +36,15 @@ type sessionMember struct {
 
 // SessionSource 按市场时段组合的简报源
 type SessionSource struct {
-	name     string
-	session  string
-	title    string
-	members  []sessionMember
-	digestSt digest.Store
-	llmProv  llm.Provider
-	force    bool // 跳过交易日判断（手动 FetchOnly / 测试用）
-	maxChars int  // 单条消息上限（字符数），超出按小节分段推送
+	name            string
+	session         string
+	title           string
+	members         []sessionMember
+	digestSt        digest.Store
+	llmProv         llm.Provider
+	force           bool // 跳过交易日判断（手动 FetchOnly / 测试用）
+	maxChars        int  // 单条消息上限（字符数），超出按小节分段推送
+	titleFromMember bool // 用行情成员的内在标题（随竞价/开盘/午盘相位变化）
 }
 
 // NewSessionSource 创建时段简报源。members 里每一项用现有的源类型组装：
@@ -57,14 +59,17 @@ type SessionSource struct {
 func NewSessionSource(cfg Config) (Source, error) {
 	session, _ := cfg.Options["session"].(string)
 	switch session {
-	case sessionMorning, sessionClose, sessionUS:
+	case sessionMorning, sessionClose, sessionUS, sessionWeek:
 	default:
-		return nil, fmt.Errorf("session: unknown session %q (want morning/close/us)", session)
+		return nil, fmt.Errorf("session: unknown session %q (want morning/close/us/week)", session)
 	}
 	s := &SessionSource{name: cfg.Name, session: session}
 	s.title, _ = cfg.Options["title"].(string)
 	if force, ok := cfg.Options["force"].(bool); ok {
 		s.force = force
+	}
+	if fromMember, ok := cfg.Options["title_from_member"].(bool); ok {
+		s.titleFromMember = fromMember
 	}
 	s.maxChars = sessionDefaultMaxChars
 	if v, ok := cfg.Options["max_chars"].(int); ok && v >= 0 {
@@ -75,6 +80,7 @@ func NewSessionSource(cfg Config) (Source, error) {
 			sessionMorning: "🌅 盘前全景",
 			sessionClose:   "📊 A股收盘",
 			sessionUS:      "🌎 美盘前瞻",
+			sessionWeek:    "🗓 周度版次",
 		}[session]
 	}
 
@@ -137,6 +143,15 @@ func (s *SessionSource) SetLLMProvider(provider llm.Provider) {
 	}
 }
 
+// SetEventReader 把事件模型注入 events 成员（版次段落）。
+func (s *SessionSource) SetEventReader(reader EventReader) {
+	for _, member := range s.members {
+		if setter, ok := member.src.(EventReaderSetter); ok {
+			setter.SetEventReader(reader)
+		}
+	}
+}
+
 func (s *SessionSource) Fetch() ([]*model.Message, error) {
 	return s.FetchContext(context.Background())
 }
@@ -148,6 +163,7 @@ func (s *SessionSource) FetchContext(parent context.Context) ([]*model.Message, 
 
 	var parts []sessionPart
 	var failed []string
+	memberTitle := ""
 	for _, member := range s.members {
 		if member.createErr != nil {
 			failed = append(failed, member.label)
@@ -163,6 +179,11 @@ func (s *SessionSource) FetchContext(parent context.Context) ([]*model.Message, 
 		for _, msg := range messages {
 			if msg == nil {
 				continue
+			}
+			// 同一时段源一天跑多槽（竞价/开盘/午盘/收盘/盘后），标题跟随行情成员相位，
+			// 不能让所有槽都叫“盘前全景”。
+			if memberTitle == "" && member.typ == "market-briefing" && strings.TrimSpace(msg.Title) != "" {
+				memberTitle = strings.TrimSpace(msg.Title)
 			}
 			parts = append(parts, sessionPart{
 				text:          s.renderMember(member, msg),
@@ -184,6 +205,9 @@ func (s *SessionSource) FetchContext(parent context.Context) ([]*model.Message, 
 	chunks := packSessionParts(parts, s.maxChars)
 	messages := make([]*model.Message, 0, len(chunks))
 	baseTitle := fmt.Sprintf("%s · %s", s.title, now.Format("01-02"))
+	if s.titleFromMember && memberTitle != "" {
+		baseTitle = memberTitle
+	}
 	for i, chunk := range chunks {
 		title := baseTitle
 		if len(chunks) > 1 {
@@ -210,7 +234,11 @@ func (s *SessionSource) FetchContext(parent context.Context) ([]*model.Message, 
 			msg.SetMetadata("digest_lease_id", chunk.leaseID)
 			msg.SetMetadata("digest_briefing", chunk.leaseBriefing)
 		}
-		msg.SetMetadata("display_source", s.title)
+		displaySource := s.title
+		if s.titleFromMember && memberTitle != "" {
+			displaySource = memberTitle
+		}
+		msg.SetMetadata("display_source", displaySource)
 		messages = append(messages, msg)
 	}
 	return messages, nil
@@ -375,6 +403,9 @@ func (s *SessionSource) sessionActive(now time.Time) bool {
 		}
 		wd := now.In(ny).Weekday()
 		return wd != time.Saturday && wd != time.Sunday
+	case sessionWeek:
+		// 调度器只支持 HH:MM；周度版次每天 20:00 触发，只在周日真正产出。
+		return now.Weekday() == time.Sunday
 	}
 	return false
 }

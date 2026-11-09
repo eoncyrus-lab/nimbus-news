@@ -71,6 +71,8 @@ type RSSSource struct {
 	linkedBodyAppend    bool // append linked body instead of replacing content
 	linkedBodyHosts     map[string]struct{}
 	linkedBodyMaxChars  int
+	formatBullets       bool          // 长文按句切分成 "- " 分点（ForexLive 要闻汇总）
+	bulletMinRunes      int           // 触发分点的正文长度下限
 	isGoogleNews        bool          // 是否是 Google News RSS
 	maxAge              time.Duration // 新闻最大时效（默认24小时）
 	maxResponseBytes    int64
@@ -100,6 +102,7 @@ func NewRSSSource(cfg Config) (Source, error) {
 		maxResponseBytes:   defaultRSSMaxResponseBytes,
 		linkedBodyHosts:    make(map[string]struct{}),
 		linkedBodyMaxChars: 12000,
+		bulletMinRunes:     400,
 		imageCache:         make(map[string]imageCacheEntry),
 	}
 
@@ -140,6 +143,15 @@ func NewRSSSource(cfg Config) (Source, error) {
 	source.sendImages = optionBool(cfg.Options, "send_images")
 	source.fetchLinkedBody = optionBool(cfg.Options, "fetch_linked_body")
 	source.linkedBodyAppend = optionBool(cfg.Options, "linked_body_append")
+	if format, _ := cfg.Options["format"].(string); strings.EqualFold(format, "bullets") {
+		source.formatBullets = true
+	}
+	if optionBool(cfg.Options, "bullets") {
+		source.formatBullets = true
+	}
+	if n := optionInt(cfg.Options, "bullet_min_runes"); n > 0 {
+		source.bulletMinRunes = n
+	}
 	source.excludeLinkPatterns = optionStrings(cfg.Options, "exclude_link_patterns")
 	source.excludeKeywords = optionStrings(cfg.Options, "exclude_keywords")
 	source.tags = optionTags(cfg.Options, "tags")
@@ -540,6 +552,10 @@ func (r *RSSSource) Fetch() ([]*model.Message, error) {
 			rawContent = item.ContentEncoded
 		}
 		cleanContent := htmlToPlainText(rawContent)
+		if r.formatBullets {
+			// 分点源需要保留 <li>/<p> 边界，否则列表会粘成一整段。
+			cleanContent = htmlToPlainTextWithBreaks(rawContent)
+		}
 		// Google News 的 description 通常包含来源信息，提取有用内容
 		if r.isGoogleNews {
 			cleanContent = extractGoogleNewsContent(cleanContent, cleanTitle)
@@ -572,6 +588,10 @@ func (r *RSSSource) Fetch() ([]*model.Message, error) {
 			} else if err != nil {
 				slog.Debug("rss linked body fallback", "source", r.name, "link", link, "error", err)
 			}
+		}
+
+		if r.formatBullets {
+			cleanContent = formatBulletContent(cleanContent, r.bulletMinRunes)
 		}
 
 		imageURL := ""
@@ -1013,6 +1033,23 @@ func htmlToPlainText(s string) string {
 
 func collapseWhitespace(s string) string {
 	return strings.Join(strings.Fields(s), " ")
+}
+
+// htmlToPlainTextWithBreaks 保留段落/列表边界（每条 <li> 一行），供分点格式化使用。
+// htmlToPlainText 为了普通推送会把所有空白折叠成一行，长列表会粘成一整段。
+func htmlToPlainTextWithBreaks(s string) string {
+	boundaries := regexp.MustCompile(`(?i)</?(?:br|p|div|li|h[1-6]|tr|td|blockquote)\b[^>]*>`)
+	s = boundaries.ReplaceAllString(s, "\n")
+	tags := regexp.MustCompile(`<[^>]*>`)
+	s = tags.ReplaceAllString(s, " ")
+	s = html.UnescapeString(s)
+	var lines []string
+	for _, line := range strings.Split(strings.ReplaceAll(s, "\r\n", "\n"), "\n") {
+		if trimmed := strings.Join(strings.Fields(line), " "); trimmed != "" {
+			lines = append(lines, trimmed)
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // parseRSSTime 解析多种常见的RSS时间格式

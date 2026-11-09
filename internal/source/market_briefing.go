@@ -198,16 +198,27 @@ func preMarketSession(t time.Time) string {
 	if err != nil {
 		shanghai = time.FixedZone("Asia/Shanghai", 8*60*60)
 	}
-	hour := t.In(shanghai).Hour()
+	local := t.In(shanghai)
+	minutes := local.Hour()*60 + local.Minute()
 	switch {
-	case hour < 10:
+	case minutes < 9*60+15:
 		return "pre_market"
-	case hour < 12:
-		return "morning_close"
-	case hour < 14:
-		return "afternoon_open"
+	case minutes < 9*60+30:
+		return "auction" // 09:15–09:30 集合竞价
+	case minutes < 10*60:
+		return "open" // 09:30–10:00 开盘
+	case minutes < 11*60+30:
+		return "morning_session" // 10:00–11:30 盘中
+	case minutes < 13*60:
+		return "midday" // 11:30–13:00 午盘
+	case minutes < 14*60:
+		return "afternoon_open" // 13:00–14:00 午后开盘
+	case minutes < 15*60:
+		return "late_session" // 14:00–15:00 尾盘
+	case minutes < 15*60+30:
+		return "afternoon_close" // 15:00–15:30 收盘（含收盘集合竞价）
 	default:
-		return "afternoon_close"
+		return "after_hours" // 15:30 之后盘后固定价交易
 	}
 }
 
@@ -224,10 +235,31 @@ type preMarketSessionMeta struct {
 
 func preMarketMeta(session string) preMarketSessionMeta {
 	switch session {
-	case "morning_close":
+	case "auction":
 		return preMarketSessionMeta{
-			session: "morning_close", emoji: "🌆", titleLabel: "上午收盘",
-			sectionLabel: "实时行情", aiLabel: "AI 午间点评",
+			session: "auction", emoji: "⏰", titleLabel: "集合竞价",
+			sectionLabel: "隔夜行情", aiLabel: "AI 竞价研判",
+			aiRole: "A 股竞价分析师", aiMaxWords: "200",
+			triggers: false,
+		}
+	case "open":
+		return preMarketSessionMeta{
+			session: "open", emoji: "🔔", titleLabel: "开盘",
+			sectionLabel: "实时行情", aiLabel: "AI 开盘研判",
+			aiRole: "A 股开盘分析师", aiMaxWords: "200",
+			triggers: false,
+		}
+	case "morning_session":
+		return preMarketSessionMeta{
+			session: "morning_session", emoji: "📈", titleLabel: "盘中",
+			sectionLabel: "实时行情", aiLabel: "AI 盘中点评",
+			aiRole: "A 股盘中分析师", aiMaxWords: "200",
+			triggers: false,
+		}
+	case "midday":
+		return preMarketSessionMeta{
+			session: "midday", emoji: "🌆", titleLabel: "午盘",
+			sectionLabel: "实时行情", aiLabel: "AI 午盘点评",
 			aiRole: "A 股午间分析师", aiMaxWords: "200",
 			triggers: false,
 		}
@@ -236,6 +268,20 @@ func preMarketMeta(session string) preMarketSessionMeta {
 			session: "afternoon_open", emoji: "🏙", titleLabel: "午后开盘",
 			sectionLabel: "实时行情", aiLabel: "AI 午后研判",
 			aiRole: "A 股午后分析师", aiMaxWords: "200",
+			triggers: false,
+		}
+	case "late_session":
+		return preMarketSessionMeta{
+			session: "late_session", emoji: "🌇", titleLabel: "尾盘",
+			sectionLabel: "实时行情", aiLabel: "AI 尾盘研判",
+			aiRole: "A 股尾盘分析师", aiMaxWords: "200",
+			triggers: false,
+		}
+	case "after_hours":
+		return preMarketSessionMeta{
+			session: "after_hours", emoji: "🌃", titleLabel: "盘后竞价",
+			sectionLabel: "实时行情", aiLabel: "AI 盘后点评",
+			aiRole: "A 股盘后分析师", aiMaxWords: "200",
 			triggers: false,
 		}
 	case "afternoon_close":

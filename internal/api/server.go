@@ -26,6 +26,7 @@ import (
 	"github.com/Ricaardo/nimbus-os/news/internal/config"
 	"github.com/Ricaardo/nimbus-os/news/internal/core"
 	"github.com/Ricaardo/nimbus-os/news/internal/digest"
+	"github.com/Ricaardo/nimbus-os/news/internal/event"
 	"github.com/Ricaardo/nimbus-os/news/internal/llm"
 	"github.com/Ricaardo/nimbus-os/news/internal/model"
 	"github.com/Ricaardo/nimbus-os/news/internal/source"
@@ -132,6 +133,9 @@ func (s *Server) registerRoutes() {
 	// 数据源管理
 	api.GET("/sources", s.listSources)
 	api.GET("/schedule", s.getSchedule)
+	api.GET("/events/overview", s.getEventsOverview)
+	api.GET("/events/decisions", s.getEventDecisions)
+	api.GET("/events/contributions", s.getEventContributions)
 	api.POST("/sources", s.createSource)
 	api.GET("/sources/:name", s.getSource)
 	api.PUT("/sources/:name", s.updateSource)
@@ -1523,6 +1527,48 @@ func (s *Server) getSchedule(c *gin.Context) {
 
 	schedule := s.newsEngine.GetSchedule()
 	c.JSON(http.StatusOK, gin.H{"sources": schedule})
+}
+
+// getEventsOverview 返回事件模型今日预算与计数；mode=off 时只回模式。
+func (s *Server) getEventsOverview(c *gin.Context) {
+	engine := s.eventEngine()
+	if engine == nil {
+		c.JSON(http.StatusOK, gin.H{"mode": "off"})
+		return
+	}
+	c.JSON(http.StatusOK, engine.Overview())
+}
+
+// getEventDecisions 返回某天的可解释判定，默认今天。
+func (s *Server) getEventDecisions(c *gin.Context) {
+	engine := s.eventEngine()
+	if engine == nil {
+		c.JSON(http.StatusOK, gin.H{"decisions": []interface{}{}})
+		return
+	}
+	decisions := engine.Decisions(c.Query("date"))
+	c.JSON(http.StatusOK, gin.H{"decisions": decisions})
+}
+
+// getEventContributions 返回按源贡献报表，默认最近 7 天。
+func (s *Server) getEventContributions(c *gin.Context) {
+	engine := s.eventEngine()
+	if engine == nil {
+		c.JSON(http.StatusOK, gin.H{"days": 0, "sources": []interface{}{}})
+		return
+	}
+	days, err := strconv.Atoi(c.DefaultQuery("days", "7"))
+	if err != nil || days <= 0 || days > 90 {
+		days = 7
+	}
+	c.JSON(http.StatusOK, gin.H{"days": days, "sources": engine.Contributions(days)})
+}
+
+func (s *Server) eventEngine() *event.Engine {
+	if s.newsEngine == nil {
+		return nil
+	}
+	return s.newsEngine.EventEngine()
 }
 
 // maskSensitive 脱敏配置中的敏感字段

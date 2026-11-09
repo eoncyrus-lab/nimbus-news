@@ -12,6 +12,7 @@ import (
 	"github.com/Ricaardo/nimbus-os/news/internal/channel"
 	"github.com/Ricaardo/nimbus-os/news/internal/config"
 	"github.com/Ricaardo/nimbus-os/news/internal/digest"
+	"github.com/Ricaardo/nimbus-os/news/internal/event"
 	"github.com/Ricaardo/nimbus-os/news/internal/filter"
 	"github.com/Ricaardo/nimbus-os/news/internal/llm"
 	"github.com/Ricaardo/nimbus-os/news/internal/model"
@@ -267,6 +268,108 @@ func TestCriticalKeywordUsesTokenBoundaries(t *testing.T) {
 	}
 	if !matchesCriticalKeyword([]string{"紧急制裁"}, &model.Message{Content: "当局宣布紧急制裁措施"}) {
 		t.Fatal("CJK phrase should retain substring matching")
+	}
+}
+
+func newActiveEventEngine(t *testing.T, mode string) *event.Engine {
+	t.Helper()
+	cfg := event.DefaultConfig()
+	cfg.Mode = mode
+	cfg.Location = "Asia/Shanghai"
+	engine, err := event.NewEngine(cfg, event.DefaultRules(), event.NewMemoryStore())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixed := time.Date(2026, 11, 9, 10, 0, 0, 0, time.FixedZone("CST", 8*3600))
+	engine.SetClock(func() time.Time { return fixed })
+	return engine
+}
+
+func eventTestRouting() *config.SourceRoutingConfig {
+	return &config.SourceRoutingConfig{
+		AIPolicy: config.AIPolicyBypass, OnAIFailure: config.RouteDefaultSilent,
+		Default: config.RouteDefaultDirect,
+		Direct:  &config.RouteBand{MaxPerDay: 3, Priority: 20},
+		Digest:  &config.RouteBand{MaxPerDay: 2, Priority: 10, BriefingTarget: "news_aggregate"},
+	}
+}
+
+func TestEventActiveInstantOverridesTypedRouting(t *testing.T) {
+	store := &typedRoutedStore{directAdmission: digest.RouteAdmission{Admitted: true, Lane: digest.RouteDirect}}
+	engine := &NewsEngine{digestStore: store, events: newActiveEventEngine(t, event.ModeActive)}
+	attachSuccessfulTypedRouter(engine)
+	msg := &model.Message{Type: model.TypeNews, ID: "evt-instant", Title: "Fed announces rate decision", Content: "rate decision", Metadata: map[string]interface{}{}}
+	if !engine.routeTypedMessages(context.Background(), "bwe-tradfi", newsSourceInfo{routing: eventTestRouting(), channels: []string{"main"}}, []*model.Message{msg}) {
+		t.Fatal("route failed")
+	}
+	if store.directCalls != 1 || store.digestCalls != 0 {
+		t.Fatalf("direct=%d digest=%d, want 1/0", store.directCalls, store.digestCalls)
+	}
+	if got := msg.GetStringMetadata("event_lane"); got != event.LaneInstant {
+		t.Fatalf("event_lane=%q", got)
+	}
+	if got := msg.GetStringMetadata("event_override"); got != "1" {
+		t.Fatalf("event_override=%q", got)
+	}
+	if store.directRequest.MaxPerDay != 0 {
+		t.Fatalf("event instant should bypass daily quota, MaxPerDay=%d", store.directRequest.MaxPerDay)
+	}
+}
+
+func TestEventActiveDeferGoesToDigest(t *testing.T) {
+	store := &typedRoutedStore{directAdmission: digest.RouteAdmission{Admitted: true, Lane: digest.RouteDirect}}
+	engine := &NewsEngine{digestStore: store, events: newActiveEventEngine(t, event.ModeActive)}
+	attachSuccessfulTypedRouter(engine)
+	// 未分类基础分 40 + 分析源 0 + 首发 5 = 45：defer 带。
+	msg := &model.Message{Type: model.TypeNews, ID: "evt-defer", Title: "some market commentary", Content: "no matching class", Metadata: map[string]interface{}{}}
+	if !engine.routeTypedMessages(context.Background(), "kobeissi-letter", newsSourceInfo{routing: eventTestRouting(), channels: []string{"main"}}, []*model.Message{msg}) {
+		t.Fatal("route failed")
+	}
+	if store.directCalls != 0 || store.digestCalls != 1 {
+		t.Fatalf("direct=%d digest=%d, want 0/1", store.directCalls, store.digestCalls)
+	}
+	if store.digestRequest.MaxPerDay != 0 || store.digestRequest.Briefing != digest.Briefing("news_aggregate") {
+		t.Fatalf("digest request=%+v", store.digestRequest)
+	}
+	if got := msg.GetStringMetadata("event_lane"); got != event.LaneDefer {
+		t.Fatalf("event_lane=%q", got)
+	}
+}
+
+func TestEventActiveArchiveSuppressesDelivery(t *testing.T) {
+	store := &typedRoutedStore{directAdmission: digest.RouteAdmission{Admitted: true, Lane: digest.RouteDirect}}
+	engine := &NewsEngine{digestStore: store, events: newActiveEventEngine(t, event.ModeActive)}
+	attachSuccessfulTypedRouter(engine)
+	// 国内政治基础分 20 + 分析源 0 + 首发 5 = 25：archive。
+	msg := &model.Message{Type: model.TypeNews, ID: "evt-archive", Title: "election campaign update", Content: "no market impact", Metadata: map[string]interface{}{}}
+	if !engine.routeTypedMessages(context.Background(), "kobeissi-letter", newsSourceInfo{routing: eventTestRouting(), channels: []string{"main"}}, []*model.Message{msg}) {
+		t.Fatal("route failed")
+	}
+	if store.directCalls != 0 || store.digestCalls != 0 {
+		t.Fatalf("direct=%d digest=%d, want 0/0", store.directCalls, store.digestCalls)
+	}
+	if got := msg.GetStringMetadata("event_override"); got != "suppressed" {
+		t.Fatalf("event_override=%q", got)
+	}
+}
+
+func TestEventShadowKeepsTypedRouting(t *testing.T) {
+	store := &typedRoutedStore{directAdmission: digest.RouteAdmission{Admitted: true, Lane: digest.RouteDirect}}
+	engine := &NewsEngine{digestStore: store, events: newActiveEventEngine(t, event.ModeShadow)}
+	attachSuccessfulTypedRouter(engine)
+	msg := &model.Message{Type: model.TypeNews, ID: "evt-shadow", Title: "some market commentary", Content: "no matching class", Metadata: map[string]interface{}{}}
+	if !engine.routeTypedMessages(context.Background(), "feed", newsSourceInfo{routing: eventTestRouting(), channels: []string{"main"}}, []*model.Message{msg}) {
+		t.Fatal("route failed")
+	}
+	// shadow 不改车道：仍然按 source 配置走 direct。
+	if store.directCalls != 1 {
+		t.Fatalf("direct=%d, want 1", store.directCalls)
+	}
+	if got := msg.GetStringMetadata("event_override"); got != "" {
+		t.Fatalf("shadow should not override, got %q", got)
+	}
+	if got := msg.GetStringMetadata("event_lane"); got == "" {
+		t.Fatal("shadow should still record event_lane")
 	}
 }
 

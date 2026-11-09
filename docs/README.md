@@ -6,7 +6,8 @@
 
 - [部署说明](deployment.md): VPS systemd + Mac launchd 双实例、角色切换、健康检查、备份恢复
 - [架构方案（2026-11-09）](architecture-v2-2026-11-09.md): 源评估、R1–R10 修复、双实例、事件模型路线与实施状态
-- [数据源输出格式](source-output-format.md): 12 个源各拉一次的真实样本、字段契约与格式限制
+- [事件模型](event-model.md): Story/Thread/Decision/Edition 的身份、打分、预算、模式与 API
+- [数据源输出格式](source-output-format.md): 各源真实样本（含 jin10）、字段契约与格式限制
 
 ## 清理约定
 

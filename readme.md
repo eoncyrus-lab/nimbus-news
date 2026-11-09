@@ -29,7 +29,7 @@ docs/                      # 部署、架构与维护文档
 
 - `config.platform.yaml.example`: 当前 15 源/2 渠道拓扑的无密钥模板
 - `config.platform.yaml`: 本地运行配置，已加入 `.gitignore`（`make init` 从模板生成）
-- `config.platform.vps.yaml`: VPS 运行配置（含密钥，本地为真源），已加入 `.gitignore`
+- `config.platform.vps.yaml`: VPS 运行配置（含密钥，维护者本地持有），已加入 `.gitignore`
 - `config.dump.yaml`: source-dump 用配置，`make dump-config` 从模板生成，已加入 `.gitignore`
 - `.env.example`: 可提交的环境变量模板
 - `.env`: 本地/生产密钥，已加入 `.gitignore`
@@ -43,6 +43,15 @@ make init                 # 生成 config.platform.yaml / .env（已存在则跳
 然后只在 `.env` 里填写密钥。`config.platform.yaml` 保留 `${VAR}` 引用，不要把
 webhook、token 或 API key 写成明文。服务启动时会展开这些引用；配置管理 API 的
 无关更新会继续保留磁盘上的环境变量占位符。
+
+模板改了不会自动进真实配置。拉取后先看差异，再决定合并哪些项：
+
+```bash
+make config-diff CONFIG=config.platform.yaml
+```
+
+密钥字段自动跳过；合并后重启对应实例（Mac `make mac-restart`，VPS
+`systemctl restart news-platform`）。
 
 未配置 `routing` 的源继续使用 legacy `delivery_mode` / `briefing_target`；新配置应优先使用
 typed `routing`，不要在同一个源上混用两套字段。
@@ -68,6 +77,8 @@ make init                 # 生成 config.platform.yaml / .env
 make build-native         # go build -o bin/platform ./cmd/platform
 make run                  # 前台运行（默认 127.0.0.1:8081）
 make test
+make dump-config          # 生成 source-dump 用配置
+make config-diff CONFIG=config.platform.yaml  # 对比模板
 make dev-frontend         # Vue 管理后台（localhost:3000）
 ```
 

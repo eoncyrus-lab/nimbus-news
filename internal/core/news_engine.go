@@ -313,10 +313,14 @@ func (e *NewsEngine) FetchOnly(ctx context.Context, name string) ([]*model.Messa
 		metrics.SourceFetchDuration.WithLabelValues(src.Name()).Observe(latency.Seconds())
 		return nil, err
 	}
-	// 健康语义:有产出才算成功;0 条(304/空源)不更新健康——
-	// 避免主动拉取掩盖真实故障(304 只代表内容未变,不代表源健康)。
-	if len(messages) > 0 && e.healthMonitor != nil {
-		e.healthMonitor.RecordSuccess(src.Name(), latency, len(messages))
+	// 健康语义:有产出才算成功;0 条(304/空源)不更新成功率，
+	// 但高频源连续空转要单独计数（上游停更/过滤过严不会报错）。
+	if e.healthMonitor != nil {
+		if len(messages) > 0 {
+			e.healthMonitor.RecordSuccess(src.Name(), latency, len(messages))
+		} else {
+			e.healthMonitor.RecordEmpty(src.Name())
+		}
 	}
 	metrics.SourceFetchTotal.WithLabelValues(src.Name(), "success").Inc()
 	metrics.SourceFetchDuration.WithLabelValues(src.Name()).Observe(latency.Seconds())
@@ -909,7 +913,11 @@ func (e *NewsEngine) fetchAndDispatchGeneration(src source.Source, info newsSour
 	// payload has been durably prepared for delivery.
 	if !digestBriefing {
 		if e.healthMonitor != nil {
-			e.healthMonitor.RecordSuccess(src.Name(), latency, len(messages))
+			if len(messages) > 0 {
+				e.healthMonitor.RecordSuccess(src.Name(), latency, len(messages))
+			} else {
+				e.healthMonitor.RecordEmpty(src.Name())
+			}
 		}
 		metrics.SourceFetchTotal.WithLabelValues(src.Name(), "success").Inc()
 	}
@@ -1459,7 +1467,7 @@ func (e *NewsEngine) registerSourceHealth(cfg SourceConfig) {
 		e.healthMonitor.RegisterScheduledSource(cfg.Name)
 		return
 	}
-	e.healthMonitor.RegisterSource(cfg.Name)
+	e.healthMonitor.RegisterSourceWithInterval(cfg.Name, time.Duration(cfg.Interval)*time.Second)
 	health := e.healthMonitor.GetHealth(cfg.Name)
 	if health != nil && (health.Status == source.StatusAwaitingSchedule || health.Status == source.StatusDisabled) {
 		_ = e.healthMonitor.SetSourceStatus(cfg.Name, source.StatusHealthy)

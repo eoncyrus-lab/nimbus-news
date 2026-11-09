@@ -3,9 +3,12 @@ package source
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 )
+
+const emptyStreakErrorPrefix = "连续 "
 
 // HealthMonitor 健康监控器
 type HealthMonitor struct {
@@ -22,6 +25,9 @@ func NewHealthMonitor(cfg HealthConfig) *HealthMonitor {
 	}
 	if cfg.UnhealthyThreshold == 0 {
 		cfg.UnhealthyThreshold = 5
+	}
+	if cfg.EmptyThreshold == 0 {
+		cfg.EmptyThreshold = 6
 	}
 	if cfg.RecoveryInterval == 0 {
 		cfg.RecoveryInterval = 5 * time.Minute
@@ -66,6 +72,20 @@ func (m *HealthMonitor) RegisterSource(name string) {
 	}
 }
 
+// RegisterSourceWithInterval 注册间隔调度源，并启用“连续 0 条”降级检查。
+// 只对 5 分钟及以内的高频源生效：低频 RSS/日报本来就可能长时间没有新条目。
+func (m *HealthMonitor) RegisterSourceWithInterval(name string, interval time.Duration) {
+	m.RegisterSource(name)
+	if interval <= 0 || interval > 5*time.Minute {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if h, ok := m.sources[name]; ok {
+		h.emptyThreshold = m.config.EmptyThreshold
+	}
+}
+
 // RegisterScheduledSource 注册尚未执行首次抓取的定时数据源。
 func (m *HealthMonitor) RegisterScheduledSource(name string) {
 	m.mu.Lock()
@@ -106,6 +126,13 @@ func (m *HealthMonitor) RecordSuccess(name string, latency time.Duration, fetchC
 	h.LastCheckTime = time.Now()
 	h.LastFetchCount = fetchCount
 	h.awaitingFirstSuccess = false
+	if h.ConsecutiveEmpty > 0 {
+		// 从“连续 0 条”恢复时清掉空转原因。
+		if strings.HasPrefix(h.LastError, emptyStreakErrorPrefix) {
+			h.LastError = ""
+		}
+		h.ConsecutiveEmpty = 0
+	}
 
 	// 更新平均延迟（滑动平均）
 	latencyMs := latency.Milliseconds()
@@ -125,6 +152,30 @@ func (m *HealthMonitor) RecordSuccess(name string, latency time.Duration, fetchC
 	// 不发恢复通知：源频繁抖动时"恢复"消息没有操作价值，只保留降级/故障告警。
 }
 
+// RecordEmpty 记录一次“抓取成功但 0 条”。高频源连续空转会降级：
+// 上游停更、RSS 换地址或源内过滤过严，都不会让 Fetch 报错。
+func (m *HealthMonitor) RecordEmpty(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	h, ok := m.sources[name]
+	if !ok || h.scheduled || h.emptyThreshold <= 0 || h.Status == StatusDisabled {
+		return
+	}
+	h.LastCheckTime = time.Now()
+	h.LastFetchCount = 0
+	h.ConsecutiveEmpty++
+	if h.Status != StatusHealthy || h.ConsecutiveEmpty < h.emptyThreshold {
+		return
+	}
+	h.Status = StatusDegraded
+	h.LastError = fmt.Sprintf("%s%d 次抓取 0 条，上游可能停更或过滤过严", emptyStreakErrorPrefix, h.ConsecutiveEmpty)
+	if m.notifier != nil {
+		go m.notifier.NotifyDegraded(name, m.copyHealth(h))
+	}
+	slog.Warn("[HealthMonitor] Source empty streak", "name", name, "empty", h.ConsecutiveEmpty)
+}
+
 // RecordFailure 记录失败
 func (m *HealthMonitor) RecordFailure(name string, err error) {
 	m.mu.Lock()
@@ -138,6 +189,7 @@ func (m *HealthMonitor) RecordFailure(name string, err error) {
 	h.LastFailure = time.Now()
 	h.LastError = err.Error()
 	h.ConsecutiveFails++
+	h.ConsecutiveEmpty = 0
 	h.TotalRequests++
 	h.TotalFailures++
 	h.LastCheckTime = time.Now()

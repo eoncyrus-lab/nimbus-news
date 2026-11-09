@@ -29,20 +29,23 @@ type SourceHealth struct {
 	AvgLatencyMs         int64        `json:"avg_latency_ms"`
 	LastCheckTime        time.Time    `json:"last_check_time,omitempty"`
 	LastFetchCount       int          `json:"last_fetch_count"`           // 上次抓取的消息数量
+	ConsecutiveEmpty     int          `json:"consecutive_empty"`          // 连续抓取 0 条的次数
 	UnhealthySince       time.Time    `json:"unhealthy_since,omitempty"`  // 进入不健康状态的时间
 	LastNotifiedAt       time.Time    `json:"last_notified_at,omitempty"` // 最后一次发送告警的时间
 	scheduled            bool
 	awaitingFirstSuccess bool
+	emptyThreshold       int // >0 时启用“连续 0 条”降级；定时源为 0
 }
 
 // HealthConfig 健康检查配置
 type HealthConfig struct {
 	Enabled            bool          `yaml:"enabled"`
-	DegradedThreshold  int           `yaml:"degraded_threshold"`  // 降级阈值（连续失败次数）
-	UnhealthyThreshold int           `yaml:"unhealthy_threshold"` // 不健康阈值
-	RecoveryInterval   time.Duration `yaml:"recovery_interval"`   // 恢复探测间隔
-	RenotifyInterval   time.Duration `yaml:"renotify_interval"`   // 持续不健康时的重新告警间隔
-	NotifyChannels     []string      `yaml:"notify_channels"`     // 告警通知渠道
+	DegradedThreshold  int           `yaml:"degraded_threshold"`       // 降级阈值（连续失败次数）
+	UnhealthyThreshold int           `yaml:"unhealthy_threshold"`      // 不健康阈值
+	EmptyThreshold     int           `yaml:"empty_degraded_threshold"` // 连续 0 条降级阈值（高频源）
+	RecoveryInterval   time.Duration `yaml:"recovery_interval"`        // 恢复探测间隔
+	RenotifyInterval   time.Duration `yaml:"renotify_interval"`        // 持续不健康时的重新告警间隔
+	NotifyChannels     []string      `yaml:"notify_channels"`          // 告警通知渠道
 }
 
 // DefaultHealthConfig 默认健康配置
@@ -51,6 +54,7 @@ func DefaultHealthConfig() HealthConfig {
 		Enabled:            true,
 		DegradedThreshold:  3,
 		UnhealthyThreshold: 5,
+		EmptyThreshold:     6,
 		RecoveryInterval:   5 * time.Minute,
 		RenotifyInterval:   6 * time.Hour,
 	}

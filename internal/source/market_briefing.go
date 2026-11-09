@@ -839,9 +839,10 @@ func (s *MarketBriefingSource) fetchUSPreview(parent context.Context) ([]*model.
 		vixTermRaw = string(r.Raw)
 	}
 	// 2. 关键标的行情（含夜盘期货、汇率与中概）
-	ussymbols := []string{"SPY", "QQQ", "KWEB", "FXI", "ES=F", "NQ=F", "GC=F", "CL=F", "BTC-USD", "USDCNH=X", "^TNX", "DX-Y.NYB"}
+	ussymbols := []string{"SPY", "QQQ", "KWEB", "FXI", "ES=F", "NQ=F", "GC=F", "CL=F", "BTC-USD", "USDCNH=X"}
 	quoteLines := s.fetchQuotesBlock(ctx, ussymbols)
 	preLines := s.fetchExtendedLines(ctx, []string{"SPY", "QQQ", "KWEB", "FXI"}, "盘前")
+	rateLines := fetchRatesBlock(ctx)
 
 	// 3. AI 叙事
 	narrative := s.usPreviewNarrative(ctx, quoteLines, fedwatchRaw, vixTermRaw)
@@ -850,7 +851,7 @@ func (s *MarketBriefingSource) fetchUSPreview(parent context.Context) ([]*model.
 		return nil, nil
 	}
 
-	content := s.renderUSPreview(preLines, quoteLines, fedwatchRaw, vixTermRaw, narrative)
+	content := s.renderUSPreview(preLines, quoteLines, rateLines, fedwatchRaw, vixTermRaw, narrative)
 	now := time.Now()
 	id := fmt.Sprintf("us_preview_%s", now.Format("20060102"))
 	msg := &model.Message{
@@ -871,6 +872,7 @@ func (s *MarketBriefingSource) fetchUSPreview(parent context.Context) ([]*model.
 func (s *MarketBriefingSource) renderUSPreview(
 	preLines []string,
 	quotes []string,
+	rateLines []string,
 	fedwatchRaw string,
 	vixTermRaw string,
 	narrative string,
@@ -895,6 +897,14 @@ func (s *MarketBriefingSource) renderUSPreview(
 		b.WriteString("暂无数据\n")
 	}
 	b.WriteString("\n")
+
+	if len(rateLines) > 0 {
+		b.WriteString("── 利率与美元 ──\n")
+		for _, line := range rateLines {
+			b.WriteString(line + "\n")
+		}
+		b.WriteString("\n")
+	}
 
 	// FedWatch 利率预期 (formatted for chat)
 	if fw := formatFedWatch(fedwatchRaw); fw != "" {
@@ -1518,6 +1528,8 @@ var quoteDisplayNames = map[string]string{
 	"KWEB": "中概互联网ETF", "FXI": "中国大盘ETF", "RSP": "标普等权ETF", "SOXX": "费城半导体ETF",
 	"SPY": "标普500ETF", "QQQ": "纳指100ETF", "^GSPC": "标普500", "^IXIC": "纳斯达克",
 	"^DJI": "道指", "^VIX": "恐慌指数VIX", "DX-Y.NYB": "美元指数",
+	"^HSI": "恒生指数", "^HSTECH": "恒生科技ETF", "SI=F": "白银",
+	"000001.SS": "上证指数", "399001.SZ": "深证成指", "399006.SZ": "创业板指",
 }
 
 // fetchRatesBlock 用 Yahoo 原始报价取美债收益率：行情服务的 CBOE 适配器会把

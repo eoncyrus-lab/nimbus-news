@@ -8,7 +8,7 @@
 # ============================================
 
 .PHONY: help init build-native run test vet deploy-vps install-mac uninstall-mac \
-        mac-bootstrap mac-restart mac-status mac-logs \
+        mac-bootstrap mac-restart mac-status mac-logs dump-config \
         backup restore python-deps dev-backend dev-frontend health smoke-longbridge
 
 .DEFAULT_GOAL := help
@@ -35,6 +35,7 @@ help:
 	@echo ""
 	@echo "$(GREEN)构建:$(NC)"
 	@echo "  make init           - 从模板生成本地配置/环境变量"
+	@echo "  make dump-config    - 生成 source-dump 用的 config.dump.yaml"
 	@echo "  make build-native   - go build -o bin/platform ./cmd/platform"
 	@echo "  make test           - go test ./..."
 	@echo "  make vet            - go vet ./..."
@@ -60,6 +61,10 @@ init:
 	@if [ ! -f "$(ENV_FILE)" ]; then cp .env.example "$(ENV_FILE)"; echo "$(GREEN)✓ 已创建 $(ENV_FILE)$(NC)"; else echo "$(YELLOW)$(ENV_FILE) 已存在，跳过$(NC)"; fi
 	@mkdir -p data
 
+# source-dump 的本地配置从模板生成，避免和 config.platform.yaml.example 漂移。
+dump-config:
+	@if [ -x .venv/bin/python ]; then .venv/bin/python scripts/make_dump_config.py; else $(PYTHON) scripts/make_dump_config.py; fi
+
 build-native:
 	@echo "$(BLUE)>>> go build platform...$(NC)"
 	go build -o bin/platform ./cmd/platform
@@ -78,7 +83,8 @@ vet:
 mac-bootstrap: init python-deps build-native
 	./deploy/install-launchd.sh
 
-install-mac: build-native
+# 日常更新也先跑 init：缺配置时自动从模板生成，已有文件不会被覆盖。
+install-mac: init build-native
 	./deploy/install-launchd.sh
 
 # 只改 .env 或 config.platform.yaml 时无需重新构建。

@@ -28,8 +28,9 @@ docs/                      # 部署、架构与维护文档
 ## 配置约定
 
 - `config.platform.yaml.example`: 当前 15 源/2 渠道拓扑的无密钥模板
-- `config.platform.yaml`: 本地运行配置，已加入 `.gitignore`
+- `config.platform.yaml`: 本地运行配置，已加入 `.gitignore`（`make init` 从模板生成）
 - `config.platform.vps.yaml`: VPS 运行配置（含密钥，本地为真源），已加入 `.gitignore`
+- `config.dump.yaml`: source-dump 用配置，`make dump-config` 从模板生成，已加入 `.gitignore`
 - `.env.example`: 可提交的环境变量模板
 - `.env`: 本地/生产密钥，已加入 `.gitignore`
 

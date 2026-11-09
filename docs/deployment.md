@@ -66,7 +66,11 @@ make mac-status             # 看 launchd 状态 + /api/health/live + /api/healt
 ```
 
 `make mac-bootstrap` 等价于 `make init` + `make python-deps` + `make install-mac`，
-已有 `config.platform.yaml`、`.env` 不会被覆盖，可以重复执行。
+已有 `config.platform.yaml`、`.env` 不会被覆盖，可以重复执行。日常 `make install-mac`
+也会先跑 `make init`：配置文件缺失时自动按模板生成，已有文件保持不动。
+
+真实配置不入库：`config.platform.yaml`、`config.platform.vps.yaml` 都含部署差异
+（后者还含密钥），仓库只保留 `config.platform.yaml.example`；密钥统一写进 `.env`。
 
 ### 日常更新
 

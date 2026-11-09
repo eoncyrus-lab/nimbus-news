@@ -242,10 +242,11 @@ func TestProductionTypedRoutingUsesNarrowCriticalPolicies(t *testing.T) {
 		false, AIPolicyBypass, RouteDefaultSilent, RouteDefaultDirect,
 		&routeBandExpectation{maxPerDay: 3, priority: 70},
 		&routeBandExpectation{maxPerDay: 0, priority: 50, briefingTarget: "news_aggregate"})
-	// 图表型分析独立直推（不限量）。
+	// 图表型分析直推，限 8 条/日；溢出进 news_aggregate，避免冷启动一次推 20 条。
 	assertSourcePolicy(t, sources, "kobeissi-letter", 300, nil, nil,
 		false, AIPolicyBypass, RouteDefaultSilent, RouteDefaultDirect,
-		&routeBandExpectation{maxPerDay: 0, priority: 60}, nil)
+		&routeBandExpectation{maxPerDay: 8, priority: 60},
+		&routeBandExpectation{maxPerDay: 0, priority: 40, briefingTarget: "news_aggregate"})
 	// 中国/AH 中文覆盖：hk-stock 频道 min_score 2，直推预算 2/日。
 	assertSourcePolicy(t, sources, "wallstcn-hk", 180, nil, nil,
 		false, AIPolicyBypass, RouteDefaultSilent, RouteDefaultDirect,
@@ -254,6 +255,9 @@ func TestProductionTypedRoutingUsesNarrowCriticalPolicies(t *testing.T) {
 	assertSourcePolicy(t, sources, "fed-press", 900, nil, nil,
 		true, AIPolicyBypass, RouteDefaultSilent, RouteDefaultSilent,
 		&routeBandExpectation{maxPerDay: 0, priority: 100}, nil)
+	if src := sources["fed-press"]; src.Routing.CriticalMaxPerDay != 3 {
+		t.Fatalf("fed-press critical_max_per_day=%d want 3", src.Routing.CriticalMaxPerDay)
+	}
 }
 
 type routeBandExpectation struct {

@@ -39,10 +39,80 @@ func (m *mockHealthNotifier) UnhealthyCalls() int {
 	return m.unhealthyCalls
 }
 
+func (m *mockHealthNotifier) DegradedCalls() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.degradedCalls
+}
+
 func (m *mockHealthNotifier) RecoveredCalls() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.recoveredCalls
+}
+
+func TestHealthMonitor_RecordEmptyDegradesHighFrequencySource(t *testing.T) {
+	monitor := NewHealthMonitor(HealthConfig{DegradedThreshold: 3, UnhealthyThreshold: 5, EmptyThreshold: 3})
+	notifier := &mockHealthNotifier{}
+	monitor.SetNotifier(notifier)
+	monitor.RegisterSourceWithInterval("jin10", 2*time.Minute)
+
+	monitor.RecordEmpty("jin10")
+	monitor.RecordEmpty("jin10")
+	if health := monitor.GetHealth("jin10"); health.Status != StatusHealthy || health.ConsecutiveEmpty != 2 {
+		t.Fatalf("before threshold health=%+v", health)
+	}
+
+	monitor.RecordEmpty("jin10")
+	health := monitor.GetHealth("jin10")
+	if health.Status != StatusDegraded || health.ConsecutiveEmpty != 3 {
+		t.Fatalf("degraded health=%+v", health)
+	}
+	if health.LastError == "" {
+		t.Fatal("expected empty streak reason in last_error")
+	}
+	deadline := time.Now().Add(time.Second)
+	for notifier.DegradedCalls() != 1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if notifier.DegradedCalls() != 1 {
+		t.Fatalf("degraded notifications=%d", notifier.DegradedCalls())
+	}
+
+	monitor.RecordSuccess("jin10", time.Millisecond, 4)
+	health = monitor.GetHealth("jin10")
+	if health.Status != StatusHealthy || health.ConsecutiveEmpty != 0 || health.LastError != "" {
+		t.Fatalf("recovered health=%+v", health)
+	}
+}
+
+func TestHealthMonitor_RecordEmptyIgnoresScheduledSlowAndPlainSources(t *testing.T) {
+	monitor := NewHealthMonitor(HealthConfig{DegradedThreshold: 3, UnhealthyThreshold: 5, EmptyThreshold: 2})
+	monitor.RegisterScheduledSource("scheduled")
+	monitor.RegisterSourceWithInterval("slow", 10*time.Minute)
+	monitor.RegisterSource("plain")
+
+	for _, name := range []string{"scheduled", "slow", "plain"} {
+		monitor.RecordEmpty(name)
+		monitor.RecordEmpty(name)
+		monitor.RecordEmpty(name)
+		health := monitor.GetHealth(name)
+		if health.ConsecutiveEmpty != 0 || health.Status == StatusDegraded {
+			t.Fatalf("%s should not track empty streak: %+v", name, health)
+		}
+	}
+}
+
+func TestHealthMonitor_RecordFailureResetsEmptyStreak(t *testing.T) {
+	monitor := NewHealthMonitor(HealthConfig{DegradedThreshold: 3, UnhealthyThreshold: 5, EmptyThreshold: 3})
+	monitor.RegisterSourceWithInterval("jin10", 2*time.Minute)
+	monitor.RecordEmpty("jin10")
+	monitor.RecordEmpty("jin10")
+
+	monitor.RecordFailure("jin10", errors.New("network down"))
+	if health := monitor.GetHealth("jin10"); health.ConsecutiveEmpty != 0 || health.ConsecutiveFails != 1 {
+		t.Fatalf("health after failure=%+v", health)
+	}
 }
 
 func TestHealthMonitor_ScheduledSourceTransitions(t *testing.T) {

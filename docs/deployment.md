@@ -123,6 +123,13 @@ lsof -nP -iTCP:8081 -sTCP:LISTEN                 # 端口占用
 - 健康检查一直失败 → 先看 `.err.log`；A 股收盘等脚本源首次运行可能较慢
 - 仓库搬家后服务起不来 → plist 里是旧绝对路径，重新 `make install-mac`
 
+### 源健康
+
+`GET /api/sources/health` 返回逐源状态；`/api/health` 里带 `sources` 汇总计数。
+间隔 ≤5 分钟的源连续 6 次抓取 0 条会降级（`source_health.empty_degraded_threshold`），
+用于发现上游停更、RSS 换地址或源内过滤过严——这些情况 Fetch 不会报错。
+降级只写状态和日志；`notify_channels` 为空时不推送。
+
 ### 离线备份
 
 `deploy/mac-backup.sh` 通过 ssh 让 VPS 现场生成快照再取回，保留 7 份。

@@ -104,11 +104,12 @@ type AlertConfig struct {
 // SourceHealthConfig 数据源健康监控配置
 type SourceHealthConfig struct {
 	Enabled            bool     `yaml:"enabled"`
-	DegradedThreshold  int      `yaml:"degraded_threshold"`  // 降级阈值（连续失败次数）
-	UnhealthyThreshold int      `yaml:"unhealthy_threshold"` // 不健康阈值
-	RecoveryInterval   int      `yaml:"recovery_interval"`   // 恢复探测间隔（秒）
-	RenotifyInterval   int      `yaml:"renotify_interval"`   // 持续不健康时的重新告警间隔（秒）
-	NotifyChannels     []string `yaml:"notify_channels"`     // 告警通知渠道
+	DegradedThreshold  int      `yaml:"degraded_threshold"`       // 降级阈值（连续失败次数）
+	UnhealthyThreshold int      `yaml:"unhealthy_threshold"`      // 不健康阈值
+	EmptyThreshold     int      `yaml:"empty_degraded_threshold"` // 连续 0 条降级阈值（高频源，默认 6）
+	RecoveryInterval   int      `yaml:"recovery_interval"`        // 恢复探测间隔（秒）
+	RenotifyInterval   int      `yaml:"renotify_interval"`        // 持续不健康时的重新告警间隔（秒）
+	NotifyChannels     []string `yaml:"notify_channels"`          // 告警通知渠道
 }
 
 // ServerConfig 服务配置

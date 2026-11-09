@@ -465,16 +465,29 @@ func (s *Server) healthCheck(c *gin.Context) {
 	status := "ok"
 	httpStatus := http.StatusOK
 	var delivery any = gin.H{"available": false}
+	sources := gin.H{"available": false}
 	if s.newsEngine != nil {
 		snapshot := s.newsEngine.GetDigestDeliverySnapshot()
 		status, httpStatus, snapshot.HealthReason = digestDeliveryHealth(snapshot, time.Now())
 		snapshot.HealthStatus = status
 		delivery = snapshot
+		if monitor := s.newsEngine.GetHealthMonitor(); monitor != nil {
+			summary := monitor.GetSummary(false)
+			sources = gin.H{
+				"available": true,
+				"total":     summary.Total,
+				"healthy":   summary.Healthy,
+				"degraded":  summary.Degraded,
+				"unhealthy": summary.Unhealthy,
+				"disabled":  summary.Disabled,
+			}
+		}
 	}
 	c.JSON(httpStatus, gin.H{
 		"status":          status,
 		"timestamp":       time.Now().Format(time.RFC3339),
 		"digest_delivery": delivery,
+		"sources":         sources,
 	})
 }
 

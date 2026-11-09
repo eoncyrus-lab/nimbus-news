@@ -98,10 +98,12 @@ sources:
     interval: 300  # 分析型，不需要高频
     sinks: ["wechat-main", "discord-webhook"]
     routing:
-      # 独立直推：图表（利率/资产负债表/ETF flow）本身就是信息，不埋进摘要。
+      # 独立直推：图表（利率/资产负债表/ETF flow）本身就是信息。
+      # 直推限 8 条/日；配额用尽后回落聚合，避免冷启动一次推 20 条。
       ai_policy: bypass
       on_ai_failure: silent
-      direct: {max_per_day: 0, priority: 60}
+      direct: {max_per_day: 8, priority: 60}
+      digest: {max_per_day: 0, priority: 40, briefing_target: news_aggregate}
       default: direct
     options:
       max_age_hours: 12
@@ -155,6 +157,8 @@ sources:
     sinks: ["wechat-main", "discord-webhook"]
     routing:
       critical: true
+      # critical 也是直推，必须有日上限；否则 Fed 发布日会绕开所有配额。
+      critical_max_per_day: 3
       ai_policy: bypass
       on_ai_failure: silent
       direct: {max_per_day: 0, priority: 100}
@@ -644,9 +648,10 @@ filters:
       # energy-connects 已禁用(2026-07-31),不在去重组(2026-08-02 清理)
       # 2026-11-04：walter-bloomberg 加入跨源去重组，避免同一标题被 bwe-tradfi 与
       # 快讯源各推一遍；trump-rss / first-squawk 已移除。
+      # 2026-11-09：金十加入去重组，和 wallstcn 同覆盖中国宏观，避免同一数据/政策各推一遍。
       - ["bwe-tradfi", "kobeissi-letter", "forexlive-breaking",
          "fed-press", "bloomberg-markets", "bloomberg-economics",
-         "wallstcn-hk"]
+         "wallstcn-hk", "jin10"]
     semantic:
       enabled: true
       threshold: 0.75
@@ -694,6 +699,8 @@ source_health:
   enabled: true
   degraded_threshold: 3
   unhealthy_threshold: 5
+  # 高频源（间隔 ≤5 分钟）连续抓取 0 条也降级：上游停更/过滤过严不会让 Fetch 报错。
+  empty_degraded_threshold: 6
   recovery_interval: 300
   renotify_interval: 21600   # 持续 unhealthy 期间每 6h 重复告警
   # 健康状态只写入日志与 /metrics，不推送任何消息。

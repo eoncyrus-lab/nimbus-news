@@ -60,6 +60,7 @@ func InitRouter(
 		Enabled:            cfg.SourceHealth.Enabled,
 		DegradedThreshold:  cfg.SourceHealth.DegradedThreshold,
 		UnhealthyThreshold: cfg.SourceHealth.UnhealthyThreshold,
+		EmptyThreshold:     cfg.SourceHealth.EmptyThreshold,
 		RecoveryInterval:   cfg.GetRecoveryInterval(),
 		RenotifyInterval:   cfg.GetRenotifyInterval(),
 		NotifyChannels:     cfg.SourceHealth.NotifyChannels,

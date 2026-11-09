@@ -21,7 +21,8 @@ from pathlib import Path
 
 # 导入交易日判断工具
 try:
-    from utils import is_trading_day, get_last_trading_day
+    from utils import is_trading_day, get_last_trading_day, install_network_timeouts
+    install_network_timeouts()
 except ImportError:
     is_trading_day = lambda d=None: True  # 降级：假设都是交易日
     get_last_trading_day = lambda d=None: datetime.now().strftime('%Y-%m-%d')

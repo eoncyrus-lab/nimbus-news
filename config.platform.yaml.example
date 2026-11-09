@@ -58,10 +58,32 @@ sources:
     interval: 120
     sinks: ["wechat-main", "discord-webhook"]
     routing:
-      # 无 AI 模式：不做评分，也不设每日配额；每条新消息即时推送。
+      # 价值投资口径（2026-11-09）：只直推宏观大事，其余溢出进聚合。
+      # 直推预算 3/日；命中 critical 关键词（央行/数据/地缘/系统性风险）不受配额限制。
       ai_policy: bypass
       on_ai_failure: silent
-      direct: {max_per_day: 0, priority: 70}
+      critical_keywords:
+        - "FOMC"
+        - "rate decision"
+        - "降息"
+        - "降准"
+        - "加息"
+        - "非农"
+        - "CPI"
+        - "PPI"
+        - "关税"
+        - "制裁"
+        - "停火"
+        - "开战"
+        - "台海"
+        - "霍尔木兹"
+        - "债务上限"
+        - "违约"
+        - "破产"
+        - "熔断"
+        - "暴跌"
+      direct: {max_per_day: 3, priority: 70}
+      digest: {max_per_day: 0, priority: 50, briefing_target: news_aggregate}
       default: direct
     options:
       max_age_hours: 2
@@ -76,7 +98,7 @@ sources:
     interval: 300  # 分析型，不需要高频
     sinks: ["wechat-main", "discord-webhook"]
     routing:
-      # 无 AI 模式：不做评分，也不设每日配额；每条新消息即时推送。
+      # 独立直推：图表（利率/资产负债表/ETF flow）本身就是信息，不埋进摘要。
       ai_policy: bypass
       on_ai_failure: silent
       direct: {max_per_day: 0, priority: 60}
@@ -86,23 +108,8 @@ sources:
       send_images: true
       tags: ["宏观", "市场", "分析"]
 
-  # Walter Bloomberg —— 高频市场快讯（Telegram 公共频道的 RSS 转换源）。
-  # 仅放行重要宏观、能源、利率、制裁和地缘事件，避免连续讲话碎片造成噪音。
-  - name: "walter-bloomberg"
-    type: "rss"
-    url: "https://hub.wurang.net/telegram/channel/WalterBloomberg"
-    interval: 180
-    sinks: ["wechat-main", "discord-webhook"]
-    routing:
-      # 无 AI 模式：不做评分，也不设每日配额；每条新消息即时推送。
-      ai_policy: bypass
-      on_ai_failure: silent
-      direct: {max_per_day: 0, priority: 75}
-      default: direct
-    options:
-      max_age_hours: 2
-      send_images: true
-      tags: ["宏观", "市场", "快讯"]
+  # walter-bloomberg 已删除（2026-11-09）：与 bwe-tradfi 同属一条快讯线，跨源重复高，
+  # 价值投资口径下删源比调参更省事；关税/地缘由 bwe + bloomberg-markets 覆盖。
 
   # first-squawk 已移除（2026-11-04）：与 walter-bloomberg 同属一条快讯线，实测头部条目
   # 完全相同（同一伊朗无人机/WTI 标题），保留 walter 一个即可；跨源重复由去重组兜底。
@@ -212,28 +219,8 @@ sources:
         - "/podcasts/"
       tags: ["宏观", "经济", "Bloomberg"]
 
-  # Bloomberg Politics —— 全球政策/地缘（2026-08-02 新增,公开 RSS 实测可用,最新 ~30min）。
-  # 事件噪音大：critical 关键词直推(受配额),其余仅高分进美盘前瞻。
-  - name: "bloomberg-politics"
-    type: "rss"
-    url: "https://www.bloomberg.com/feeds/politics/news.rss"
-    interval: 300
-    sinks: ["wechat-main", "discord-webhook"]
-    routing:
-      # 无 AI 模式：不做评分，也不设每日配额；每条新消息即时推送。
-      ai_policy: bypass
-      on_ai_failure: silent
-      direct: {max_per_day: 0, priority: 60}
-      default: direct
-    options:
-      max_age_hours: 4
-      fetch_linked_body: false
-      exclude_link_patterns:
-        - "/videos/"
-        - "/live/"
-        - "/newsletters/"
-        - "/podcasts/"
-      tags: ["政治", "政策", "Bloomberg"]
+  # bloomberg-politics 已删除（2026-11-09）：32 条/日以政治口水为主，关税/制裁已被
+  # bwe-tradfi 与 bloomberg-markets 覆盖；宏观大事口径下不再保留纯政治源。
 
   # ForexLive（investingLive 前身）突发快讯 —— 投行级宏观快讯：经济数据 vs 预期、地缘事件
   - name: "forexlive-breaking"
@@ -242,32 +229,122 @@ sources:
     interval: 120  # 突发快讯，越快越好
     sinks: ["wechat-main", "discord-webhook"]
     routing:
-      # 无 AI 模式：不做评分，也不设每日配额；每条新消息即时推送。
+      # 价值投资口径：直推预算 3/日，经济数据超预期/央行与地缘例外不限量。
       ai_policy: bypass
       on_ai_failure: silent
-      direct: {max_per_day: 0, priority: 70}
+      critical_keywords:
+        - "FOMC"
+        - "rate decision"
+        - "非农"
+        - "NFP"
+        - "CPI"
+        - "PCE"
+        - "降息"
+        - "降准"
+        - "加息"
+        - "tariff"
+        - "sanction"
+        - "ceasefire"
+      direct: {max_per_day: 3, priority: 70}
+      digest: {max_per_day: 0, priority: 50, briefing_target: news_aggregate}
       default: direct
     options:
       max_age_hours: 1
+      # 每日要闻汇总会把几十条快讯拼成上万字符的长文；按句切分成 "- " 分点，
+      # 短快讯（< bullet_min_runes）保持原样。
+      format: "bullets"
+      bullet_min_runes: 400
       tags: ["外汇", "宏观", "快讯"]
 
-  # EIA Today in Energy —— 美国能源官方(2026-08-02 新增,实测 200):
-  # 能源政策/页岩/LNG/石油储备,配合周度库存数据(WIP 周三 22:30 北京时间)。
-  - name: "eia-energy"
-    type: "rss"
-    url: "https://www.eia.gov/rss/todayinenergy.xml"
-    interval: 600
+  # ── 中国 / AH ──
+
+  # 金十数据 7x24 快讯（公开 JSON API）：中文一手宏观/政策/商品快讯。
+  # 只保留 important=1 或命中宏观关键词的条目；个股公告类噪音在源内过滤。
+  - name: "jin10"
+    type: "jin10"
+    interval: 120
     sinks: ["wechat-main", "discord-webhook"]
     routing:
-      # AI 只做翻译，不参与路由：全部进聚合，受 digest 配额约束。
       ai_policy: bypass
       on_ai_failure: silent
-      digest: {max_per_day: 2, priority: 30, briefing_target: news_aggregate}
-      default: digest
+      critical_keywords:
+        - "央行"
+        - "美联储"
+        - "降准"
+        - "降息"
+        - "加息"
+        - "LPR"
+        - "非农"
+        - "CPI"
+        - "PPI"
+        - "关税"
+        - "制裁"
+        - "停火"
+        - "开战"
+        - "台海"
+        - "霍尔木兹"
+      direct: {max_per_day: 3, priority: 70}
+      digest: {max_per_day: 6, priority: 60, briefing_target: news_aggregate}
+      default: direct
     options:
-      max_age_hours: 12
-      fetch_linked_body: false
-      tags: ["能源", "宏观", "原油"]
+      max_age_hours: 2
+      limit: 40
+      min_important: 1
+      tags: ["中国", "宏观", "金十"]
+      # 个股公告（公告/减持/解禁/业绩预告…）不进实时推送，
+      # 在源内按天攒着，每天 08:30 汇总成一条（窗口 30 分钟内只发一次）。
+      noise_daily_summary: true
+      noise_summary_time: "08:30"
+      noise_summary_limit: 20
+
+  # 华尔街见闻 7x24 快讯（2026-11-09 新增，补中国宏观与 AH 中文覆盖缺口）
+  # 频道实测：hk-stock-channel 21 条/日，含中国 CPI/PPI、部委表态、港股监管，噪声低；
+  # a-stock-channel 178 条/日（盘中个股异动为主）、global-channel 275 条/日（全量），
+  # 两者只在需要时用 channels 配置追加，默认不接；接入高噪声频道时配 include_keywords
+  # （如 a-stock-channel + ["证监会","国务院","回购","分红"]）只放行政策/监管类条目。
+  # 重要度 score：1 常规 / 2 重要 / 3 头条；min_score 过滤掉常规条目。
+  - name: "wallstcn-hk"
+    type: "wallstcn"
+    interval: 180
+    sinks: ["wechat-main", "discord-webhook"]
+    routing:
+      # 直推预算 2/日；命中央行/数据/监管关键词不受配额限制。
+      ai_policy: bypass
+      on_ai_failure: silent
+      critical_keywords:
+        - "央行"
+        - "人民银行"
+        - "降准"
+        - "降息"
+        - "LPR"
+        - "MLF"
+        - "证监会"
+        - "国务院"
+        - "财政部"
+        - "发改委"
+        - "CPI"
+        - "PPI"
+        - "PMI"
+        - "GDP"
+        - "印花税"
+        - "港股通"
+        - "关税"
+      direct: {max_per_day: 2, priority: 70}
+      digest: {max_per_day: 6, priority: 60, briefing_target: news_aggregate}
+      default: direct
+    options:
+      channels: ["hk-stock-channel"]
+      limit: 30
+      min_score: 2
+      max_age_hours: 6
+      exclude_keywords:
+        - "提醒：日内请重点关注"
+        - "早间要闻汇总"
+        - "华尔街见闻早餐"
+      tags: ["中国", "港股", "宏观"]
+
+  # eia-energy 已删除（2026-11-09）：Today in Energy 是博客不是事件，0.4 条/日且与
+  # 油价交易无关；周度库存数据需要时另做独立源，不混在新闻快讯里。
 
   # Energy Connects —— 已删除 (2026-08-02)：内容被其他源覆盖(能源地缘由
   # forexlive/bwe 承担),长期 enabled: false 死配置,代码一并清理。
@@ -284,138 +361,225 @@ sources:
     schedule: ["10:00"]
     sinks: ["wechat-main", "discord-webhook"]
 
-  # ── A 股 ──
+  # ── 时段简报（2026-11-09：8 个定时源合并为按市场时段的 4 条）──
+  # 每条消息 = 该时段的行情 + 宏观 + 日历 + 事件 + 资讯摘要，成员由现有源类型组装。
+  # 盘中多槽（竞价/开盘/午盘/收盘），周度版次周日 20:00；成员失败只降级该段。
 
-
-# ── 简报汇总（基于市场简报源聚合推送,2026-07-18 重构）──
-
-  - name: "pre-market-briefing"
-    type: "market-briefing"
-    schedule: ["09:15", "11:35", "15:00"]  # 2026-11-04 删 13:05：午后开盘距 11:35 仅 5 分钟，行情几乎无增量
+  # A 股盘中多槽：竞价 09:20 / 开盘 09:40 / 午盘 11:35 / 收盘 15:05。
+  # 每个槽都重新租 digest（只取新到资讯），所以不是简单重复上一槽。
+  # 盘后竞价 15:30 只影响科创板/创业板固定价交易，价值低且 16:10 有完整收盘报告，故不单独设槽。
+  - name: "session-morning"
+    type: "session"
+    schedule: ["09:20", "09:40", "11:35", "15:05"]
     sinks: ["wechat-main", "discord-webhook"]
     options:
-      briefing_type: "pre_market"
-      python_cmd: "python3"
-      scripts_dir: "scripts"
-      timeout: 180
+      session: "morning"
+      title: "🌅 盘前全景"
+      # 标题跟随行情成员相位（集合竞价/开盘/盘中/午盘/收盘），避免所有槽都叫“盘前全景”。
+      title_from_member: true
+      members:
+        - label: "隔夜与盘前"
+          type: "market-briefing"
+          options:
+            briefing_type: "pre_market"
+            python_cmd: "python3"
+            scripts_dir: "scripts"
+        - label: "今日数据"
+          type: "script"
+          options:
+            command: "python3 scripts/econ_calendar.py --days 1"
+            timeout: 120
+            push_output: true
+        - label: "事件"
+          type: "events"
+          options:
+            window_hours: 12
+            limit: 6
+        - label: "资讯摘要"
+          type: "market-briefing"
+          options:
+            briefing_type: "aggregate"
+            python_cmd: "python3"
+            scripts_dir: "scripts"
 
-  - name: "closing-briefing"
-    type: "market-briefing"
+  # A 股收盘 16:10：收盘行情/情绪 + 全天资讯摘要
+  - name: "session-close"
+    type: "session"
     schedule: ["16:10"]
     sinks: ["wechat-main", "discord-webhook"]
     options:
-      briefing_type: "closing"
-      python_cmd: "python3"
-      scripts_dir: "scripts"
-      timeout: 300
+      session: "close"
+      title: "📊 A股收盘"
+      members:
+        - label: "收盘行情"
+          type: "market-briefing"
+          options:
+            briefing_type: "closing"
+            # 每日市场全貌：指数/涨跌家数/成交额 + 热门板块 + 两融/主力资金 + 龙虎榜。
+            # 打板预测(closing_scan)已随脚本下线；A/H 恐慌温度由 Go 侧自算，无需脚本。
+            sections: ["sentiment", "hot_sector", "capital_flow", "lhb"]
+            python_cmd: "python3"
+            scripts_dir: "scripts"
+        - label: "事件"
+          type: "events"
+          options:
+            window_hours: 8
+            limit: 8
+        - label: "美股夜盘"
+          type: "market-briefing"
+          options:
+            briefing_type: "us_overnight"
+        - label: "资讯摘要"
+          type: "market-briefing"
+          options:
+            briefing_type: "aggregate"
+            python_cmd: "python3"
+            scripts_dir: "scripts"
 
-  - name: "us-preview"
-    type: "market-briefing"
-    schedule: ["21:10"]
-    sinks: ["wechat-main", "discord-webhook"]
-    # 周末跳过由 fetchUSPreview 内部按美东日期判断（不能用 trading_days_only：
-    # 北京周六 21:10 是美东周五盘前，按北京星期会误杀）。
-    options:
-      briefing_type: "us_preview"
-      python_cmd: "python3"
-      scripts_dir: "scripts"
-      timeout: 180
-      nasdaq_calendar: true
-
-  # a-closing-scan 已移除(2026-07-18): 内容合并至 closing-briefing
-  # a-morning-followup 已移除(2026-07-18): 内容合并至 closing-briefing
-
-#   # a-evening-report 已移除(2026-07-18): 内容合并至 closing-briefing
-
-  # ── 美股/宏观 ──
-
-  - name: "us-macro-report"
-    type: "us-macro-report"
-    schedule: ["21:40"]   # 2026-11-04：从 21:30 挪开，避开 econ-calendar(21:00)/us-preview(21:10) 三连发
-    sinks: ["wechat-main", "discord-webhook"]
-    options:
-      api_key: "${FRED_API_KEY}"
-      python_cmd: "python3"
-      scripts_dir: "scripts"
-      series:
-        - "DFF"
-        - "SOFR"
-        - "DGS2"
-        - "DGS10"
-        - "DGS30"
-        - "M2SL"
-        - "WALCL"
-        - "RRPONTSYD"
-        - "TOTRESNS"
-        - "T10Y2Y"
-        - "T10Y3M"
-        - "UNRATE"
-        - "CPIAUCSL"
-        - "PCEPI"
-        - "DTWEXBGS"
-        - "VIXCLS"
-        - "BAA10Y"
-        - "T10YIE"
-        - "DCOILWTICO"
-        - "BUFFETT_INDEX"
-        - "CPILFESL"
-        - "PCEPILFE"
-        - "RSXFS"
-        - "ICSA"
-        - "LABOR_GAP"
-
-
-  # 财报日历 —— 每日 08:00 推送当日港美股发布财报的公司(开源数据源,无需 OpenD)
-  # 美股段:Finnhub /calendar/earnings(免费档,需 FINNHUB_API_KEY)
-  # 港股段:akshare news_report_time_baidu(百度股市通财报发行日,含港股)
-  - name: "earnings-calendar"
-    type: "script"
-    schedule: ["08:00"]
+  # 美盘前瞻：美东 09:00（北京夏令时 21:00 / 冬令时 22:00）。
+  # 两个北京时间槽都排上，由美东实际时刻门控，只有对的那个会产出。
+  - name: "session-us"
+    type: "session"
+    schedule: ["21:00", "22:00"]
     sinks: ["wechat-main", "discord-webhook"]
     options:
-      command: "python3 scripts/earnings_calendar.py --days 1"
-      timeout: 120
-      push_output: true
+      session: "us"
+      phase: "preopen"
+      title: "🌎 美盘前瞻"
+      members:
+        - label: "美盘行情"
+          type: "market-briefing"
+          options:
+            briefing_type: "us_preview"
+            include_fedwatch: false  # FedWatch 由「美国宏观」成员统一给出
+            python_cmd: "python3"
+            scripts_dir: "scripts"
+        - label: "美国宏观"
+          type: "us-macro-report"
+          options:
+            api_key: "${FRED_API_KEY}"
+            python_cmd: "python3"
+            scripts_dir: "scripts"
+            series:
+              - "DFF"
+              - "SOFR"
+              - "DGS2"
+              - "DGS10"
+              - "DGS30"
+              - "M2SL"
+              - "WALCL"
+              - "RRPONTSYD"
+              - "TOTRESNS"
+              - "T10Y2Y"
+              - "T10Y3M"
+              - "UNRATE"
+              - "CPIAUCSL"
+              - "PCEPI"
+              - "DTWEXBGS"
+              - "VIXCLS"
+              - "BAA10Y"
+              - "T10YIE"
+              - "DCOILWTICO"
+              - "BUFFETT_INDEX"
+              - "CPILFESL"
+              - "PCEPILFE"
+              - "RSXFS"
+              - "ICSA"
+              - "LABOR_GAP"
+        - label: "明日数据"
+          type: "script"
+          options:
+            command: "python3 scripts/econ_calendar.py --days 1"
+            timeout: 120
+            push_output: true
+        - label: "资讯摘要"
+          type: "market-briefing"
+          options:
+            briefing_type: "aggregate"
+            python_cmd: "python3"
+            scripts_dir: "scripts"
 
-  # 经济事件日历 —— 每日 21:00 推送明日高重要性经济事件预告(ecocal,爬 investing.com)
-  - name: "econ-calendar"
-    type: "script"
-    schedule: ["21:00"]
+  # 美盘收盘+盘后：美东 20:05（北京夏令时 08:05 / 冬令时 09:05）。
+  # 16:00 常规收盘后还有 4 小时盘后交易，20:05 才能拿到完整盘后数据；
+  # 北京时间正好在 A 股开盘前，顺带给出对 A 股/港股的板块映射。
+  - name: "session-us-close"
+    type: "session"
+    schedule: ["08:05", "09:05"]
     sinks: ["wechat-main", "discord-webhook"]
     options:
-      command: "python3 scripts/econ_calendar.py --days 1"
-      timeout: 120
-      push_output: true
+      session: "us_close"
+      title: "🌎 美盘收盘"
+      members:
+        - label: "美盘收盘"
+          type: "market-briefing"
+          options:
+            briefing_type: "us_close"
+            # 盘后大市值财报（Nasdaq 日历，非官方接口，失败自动降级）
+            include_earnings: true
+            earnings_min_cap_100m: 200   # 只列市值 ≥200 亿美元的盘后财报
+            # 覆盖默认的 A 股产业链映射（key 用美股锚点）
+            # ashare_map:
+            #   NVDA: "算力/光模块/PCB：中际旭创、新易盛、沪电股份、工业富联"
+            python_cmd: "python3"
+            scripts_dir: "scripts"
+        - label: "资讯摘要"
+          type: "market-briefing"
+          options:
+            briefing_type: "aggregate"
+            python_cmd: "python3"
+            scripts_dir: "scripts"
+
+  # 周度版次：调度器只支持 HH:MM，所以每天 20:00 触发，session=week 内部只在周日产出。
+  # 内容为本周进入 instant/defer 的事件（events 成员直接读事件引擎，不新增脚本）。
+  - name: "session-week"
+    type: "session"
+    schedule: ["20:00"]
+    sinks: ["wechat-main", "discord-webhook"]
+    options:
+      session: "week"
+      title: "🗓 周度版次"
+      members:
+        - label: "本周事件"
+          type: "events"
+          options:
+            window_hours: 168
+            limit: 20
+            min_score: 40
+
+  # 财报日历已删除（2026-11-09）：价值投资口径下财报不进 news 推送。
 
   # 机构 13F 追踪 —— 已关闭 (2026-07-31): 非季末无产出(EDGAR 仅季度披露)
-
   # 超级投资者 13F 追踪 —— 已关闭 (2026-07-31): 28s 跑出 0 字节(非季末无新披露)
+  # global-macro 已移除(2026-07-18): 内容合并至收盘简报
 
-  # 全球经济数据总览（World Bank）。每日查,脚本内每月仅输出一次(月度门控)
-  # global-macro 已移除(2026-07-18): 内容合并至 closing-briefing
+# ── 事件模型（Story/Thread/Decision）────────────────────────────────────────
+# off    = 关闭（零开销）
+# shadow = 只记录身份归并、打分与来源贡献，不改变推送（建议先跑 1–2 周核对误判）
+# active = 判定接管 typed routing：instant 直推、defer 进 news_aggregate、其余丢弃
+#          （active 会改变线上推送，切换前先用 shadow 数据核对预算与误判）
+events:
+  mode: "shadow"
+  location: "Asia/Shanghai"
+  quiet_start: "23:30"
+  quiet_end: "07:00"
+  daily_budget: 6
+  daily_hard_limit: 8
+  class_reservation: 2
+  instant_threshold: 75
+  defer_threshold: 40
+  quiet_bypass_score: 85
+  story_window_hours: 24
+  thread_window_hours: 12
+  upgrade_delta: 15
+  retention_days: 30
 
-  # ── 新闻聚合简报 (2026-08-02 重构) ──
-  # digest 新闻摘要(news_aggregate 桶)+ BlockBeats 快讯合并,早报/晚报各一次。
-  # 原 blockbeats-evening 独立源(19:00)与 us-preview 的"资讯摘要"段均并入。
-  - name: "news-aggregate-morning"
-    type: "market-briefing"
-    schedule: ["09:25"]   # 2026-11-04：从 09:15 挪开，避免和 pre-market-briefing 同一分钟连弹
-    sinks: ["wechat-main", "discord-webhook"]
-    options:
-      briefing_type: "aggregate"
-      blockbeats_mode: "morning"
-      python_cmd: "python3"
-      scripts_dir: "scripts"
-
-  - name: "news-aggregate-evening"
-    type: "market-briefing"
-    schedule: ["19:30"]
-    sinks: ["wechat-main", "discord-webhook"]
-    options:
-      briefing_type: "aggregate"
-      blockbeats_mode: "evening"
-      python_cmd: "python3"
-      scripts_dir: "scripts"
+# ── 运行角色 ────────────────────────────────────────────────────────────────
+# active  = 唯一摄入/推送（VPS）
+# standby = 常驻只读，不摄入不投递（Mac）
+# admin   = 只读 + 手动 FetchOnly（只抓不发）
+# 双实例共用同一份配置时，用环境变量 NIMBUS_RUNTIME_ROLE 在宿主机覆盖。
+runtime:
+  role: "active"
 
 market:
   default: "yahoo"
@@ -467,9 +631,9 @@ filters:
       # energy-connects 已禁用(2026-07-31),不在去重组(2026-08-02 清理)
       # 2026-11-04：walter-bloomberg 加入跨源去重组，避免同一标题被 bwe-tradfi 与
       # 快讯源各推一遍；trump-rss / first-squawk 已移除。
-      - ["bwe-tradfi", "kobeissi-letter", "walter-bloomberg",
+      - ["bwe-tradfi", "kobeissi-letter", "forexlive-breaking",
          "fed-press", "bloomberg-markets", "bloomberg-economics",
-         "bloomberg-politics", "forexlive-breaking"]
+         "wallstcn-hk"]
     semantic:
       enabled: true
       threshold: 0.75
@@ -507,11 +671,9 @@ filters:
     target_sources:
       - "bwe-tradfi"
       - "kobeissi-letter"
-      - "walter-bloomberg"
       - "fed-press"
       - "bloomberg-markets"
       - "bloomberg-economics"
-      - "bloomberg-politics"
       - "forexlive-breaking"
 # ── Source Health ─────────────────────────────────────────────────────────────
 

@@ -100,11 +100,10 @@ type SinkConfig struct {
 
 // Config 应用配置
 type Config struct {
-	Sources  []SourceConfig `yaml:"sources"`
-	Sinks    []SinkConfig   `yaml:"sinks"`
-	Filters  FiltersConfig  `yaml:"filters"`
-	Store    StoreConfig    `yaml:"store"`
-	Investor InvestorConfig `yaml:"investor"`
+	Sources []SourceConfig `yaml:"sources"`
+	Sinks   []SinkConfig   `yaml:"sinks"`
+	Filters FiltersConfig  `yaml:"filters"`
+	Store   StoreConfig    `yaml:"store"`
 }
 
 // FiltersConfig 过滤器配置
@@ -167,23 +166,6 @@ type RatelimitRule struct {
 type StoreConfig struct {
 	Type string `yaml:"type"` // bolt/memory
 	Path string `yaml:"path"` // 数据文件路径
-}
-
-// InvestorConfig AI投资人自动运行配置
-type InvestorConfig struct {
-	Enabled   bool                     `yaml:"enabled"`   // 是否启用
-	Mode      string                   `yaml:"mode"`      // 运行模式: discovery(自主选标的)/portfolio(组合分析)/analyze(分析单个标的)
-	Schedule  []string                 `yaml:"schedule"`  // 运行时间点 (HH:MM格式)
-	Investors []InvestorScheduleConfig `yaml:"investors"` // 投资人配置列表
-	Symbols   []string                 `yaml:"symbols"`   // 默认分析的标的列表
-	Channels  []string                 `yaml:"channels"`  // 推送渠道
-}
-
-// InvestorScheduleConfig 单个投资人配置
-type InvestorScheduleConfig struct {
-	ID      string   `yaml:"id"`      // 投资人ID: buffett, soros, munger, dalio, lynch
-	Symbols []string `yaml:"symbols"` // 该投资人分析的标的，为空则使用默认
-	Mode    string   `yaml:"mode"`    // 该投资人的运行模式
 }
 
 // Load 从文件加载配置

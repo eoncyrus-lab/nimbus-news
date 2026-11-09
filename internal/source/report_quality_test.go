@@ -2,7 +2,6 @@ package source
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"testing"
 
@@ -60,61 +59,38 @@ func TestUSMacroRenderLabelsIndexAndPriorChange(t *testing.T) {
 	}
 }
 
-func TestClosingScanSummaryIsBoundedTypedOutput(t *testing.T) {
-	fixture := `{
-		"type":"closing_scan_report",
-		"market_temp":{"zt_count":42,"dt_count":3,"today_break_ratio":0.125,"main_theme":["机器人","芯片"]},
-		"candidates":[{"code":"600001","name":"示例股份","streak":3,"seal_amount":999999999,"score":88,
-			"prediction":{"bucket":{"open_median":2.4,"win_rate":0.65,"n_samples":20},"confidence":"高"},
-			"warnings":["高位波动","封单减弱"],"raw_secret":"must-not-leak"}]
-	}`
-	results := map[string]*ScriptResult{"closing_scan": {Parsed: json.RawMessage(fixture)}}
-	var report closingScanReport
-	if err := GetJSON(results, "closing_scan", &report); err != nil {
-		t.Fatal(err)
-	}
-	want := "市场温度: 涨停 42 / 跌停 3 / 炸板率 12% / 主线 机器人、芯片\n" +
-		"• [600001] 示例股份 3板 | 评分 88 | 置信度 高 | 分桶次日开盘中位数 +2.4%、胜率 65%（20样本） | 风险 高位波动；封单减弱"
-	if got := formatClosingScanSummary(&report, 5); got != want {
-		t.Fatalf("summary mismatch\ngot:  %s\nwant: %s", got, want)
-	}
-
-	content := (&MarketBriefingSource{}).renderClosing(
-		&marketSentimentReport{}, &hotSectorEveningReport{}, &lhbEveningReport{},
-		&capitalFlowEveningReport{}, &report, false, "")
-	assertNoClosingRawJSON(t, content)
-	if !strings.Contains(content, want) {
-		t.Fatalf("rendered content missing typed summary:\n%s", content)
-	}
-}
-
 func TestClosingNarrativePromptDoesNotContainRawJSON(t *testing.T) {
 	provider := &captureLLMProvider{}
 	s := &MarketBriefingSource{name: "closing-test", llmProvider: provider}
-	report := &closingScanReport{
-		MarketTemp: closingScanMarketTemp{LimitUpCount: 20, BreakRatio: 0.2},
-		Candidates: []closingScanCandidate{{
-			Code: "000001", Name: "平安银行", Streak: 1, Score: 70,
-			Prediction: closingScanPrediction{Confidence: "中", KNN: &closingScanPredictionStats{
-				OpenMedian: 1.2, WinRate: 0.55, Samples: 20,
-			}},
-			Warnings: []string{"样本有限"},
-		}},
-	}
-	s.closingNarrative(context.Background(), &marketSentimentReport{}, &hotSectorEveningReport{},
-		&lhbEveningReport{}, &capitalFlowEveningReport{}, report)
+	sen := &marketSentimentReport{}
+	sen.Indices = append(sen.Indices, struct {
+		Name      string  `json:"name"`
+		Close     float64 `json:"close"`
+		ChangePct float64 `json:"change_pct"`
+	}{Name: "上证指数", Close: 3600, ChangePct: 1.2})
+	s.closingNarrative(context.Background(), sen, &hotSectorEveningReport{},
+		&lhbEveningReport{}, &capitalFlowEveningReport{})
 	assertNoClosingRawJSON(t, provider.prompt)
-	if !strings.Contains(provider.prompt, "[000001] 平安银行 1板") {
-		t.Fatalf("prompt missing typed candidate summary:\n%s", provider.prompt)
+	if !strings.Contains(provider.prompt, "上证指数 +1.20%") {
+		t.Fatalf("prompt missing index line:\n%s", provider.prompt)
 	}
 }
 
-func TestClosingRenderReportsParseFailureBriefly(t *testing.T) {
+func TestClosingRenderSkipsEmptyOverview(t *testing.T) {
 	content := (&MarketBriefingSource{}).renderClosing(
 		&marketSentimentReport{}, &hotSectorEveningReport{}, &lhbEveningReport{},
-		&capitalFlowEveningReport{}, nil, true, "")
-	if !strings.Contains(content, "预测数据暂不可用") {
-		t.Fatalf("missing unavailable notice:\n%s", content)
+		&capitalFlowEveningReport{}, nil, "", nil)
+	if strings.Contains(content, "市场总览") {
+		t.Fatalf("empty overview header rendered:\n%s", content)
+	}
+}
+
+func TestClosingRenderMarksFailedSections(t *testing.T) {
+	content := (&MarketBriefingSource{}).renderClosing(
+		&marketSentimentReport{}, &hotSectorEveningReport{}, &lhbEveningReport{},
+		&capitalFlowEveningReport{}, nil, "", []string{"sentiment", "lhb"})
+	if !strings.Contains(content, "数据源异常") || !strings.Contains(content, "sentiment") {
+		t.Fatalf("failed sections not surfaced:\n%s", content)
 	}
 }
 
@@ -141,4 +117,23 @@ func (p *captureLLMProvider) Think(_ context.Context, messages []llm.Message, _ 
 		p.prompt = messages[0].Content
 	}
 	return "ok", "", nil
+}
+
+func TestClosingRenderUsesScriptUnits(t *testing.T) {
+	sen := &marketSentimentReport{}
+	sen.Breadth.UpCount = 2242
+	sen.Breadth.DownCount = 3148
+	sen.Limits.ZtCount = 54
+	sen.Limits.DtCount = 1
+	sen.Limits.ZbRate = 44.9 // 脚本输出百分数
+	sen.Volume.Total = 14946 // 脚本输出“亿”
+	content := (&MarketBriefingSource{}).renderClosing(
+		sen, &hotSectorEveningReport{}, &lhbEveningReport{},
+		&capitalFlowEveningReport{}, nil, "", nil)
+	if !strings.Contains(content, "炸板率 45%") {
+		t.Fatalf("broken ratio unit wrong:\n%s", content)
+	}
+	if !strings.Contains(content, "成交额: 14946亿") {
+		t.Fatalf("volume unit wrong:\n%s", content)
+	}
 }

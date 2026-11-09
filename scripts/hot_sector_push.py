@@ -41,6 +41,14 @@ import threading
 
 warnings.filterwarnings("ignore")
 
+
+# 上游接口偶发挂起；没有默认超时会把整条简报拖死。
+try:
+    from utils import install_network_timeouts
+    install_network_timeouts()
+except ImportError:
+    pass
+
 # ============================================
 # 缓存层 - SQLite 本地缓存
 # ============================================

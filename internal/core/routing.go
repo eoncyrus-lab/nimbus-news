@@ -9,6 +9,7 @@ import (
 
 	"github.com/Ricaardo/nimbus-os/news/internal/config"
 	"github.com/Ricaardo/nimbus-os/news/internal/digest"
+	"github.com/Ricaardo/nimbus-os/news/internal/event"
 	"github.com/Ricaardo/nimbus-os/news/internal/filter"
 	"github.com/Ricaardo/nimbus-os/news/internal/model"
 )
@@ -39,7 +40,19 @@ func (e *NewsEngine) routeTypedMessages(ctx context.Context, sourceName string, 
 	}
 	for _, msg := range messages {
 		msg.SetMetadata("typed_routing", "1")
+		observation := e.observeEventMessage(ctx, sourceName, msg)
 		decision := e.decideTypedRoute(ctx, sourceName, info.routing, msg)
+		if observation != nil && e.events.Active() {
+			override, deliver := eventLaneDecision(observation.Decision)
+			if !deliver {
+				// 事件模型判定 archive/silent：不进直推也不进版次。
+				msg.SetMetadata("routing_lane", string(digest.RouteSilent))
+				msg.SetMetadata("event_override", "suppressed")
+				continue
+			}
+			decision = override
+			msg.SetMetadata("event_override", "1")
+		}
 		setTypedEvalMetadata(msg, decision.eval)
 		if decision.critical {
 			msg.SetMetadata("typed_routing_critical", "1")
@@ -57,6 +70,13 @@ func (e *NewsEngine) routeTypedMessages(ctx context.Context, sourceName string, 
 			if err != nil {
 				slog.Error("direct route admission failed", "source", sourceName, "error", err)
 				return false
+			}
+			if admission.Admitted && admission.Existing && admission.Lane != digest.RouteDirect {
+				// 同一条消息当天已进 digest 车道：direct 准入只是命中了既有记录，
+				// 再 ClaimDirect 必然拿不到（记录 Lane 不匹配），消息会静默丢掉。
+				// 保持既有车道，交给 digest 批次投递。
+				msg.SetMetadata("routing_lane", string(admission.Lane))
+				continue
 			}
 			if !admission.Admitted {
 				if digestBandEligible(info.routing.Digest, decision.eval) || bypassDigestFallback(info.routing) {
@@ -92,6 +112,55 @@ func (e *NewsEngine) routeTypedMessages(ctx context.Context, sourceName string, 
 		}
 	}
 	return true
+}
+
+// observeEventMessage 把消息送进事件引擎。shadow/active 都观察；只有 active
+// 会让判定接管车道。metadata 保留判定依据，便于线上核对误判。
+func (e *NewsEngine) observeEventMessage(ctx context.Context, sourceName string, msg *model.Message) *event.Observation {
+	if e.events == nil || !e.events.Enabled() {
+		return nil
+	}
+	observation, err := e.events.Observe(ctx, sourceName, msg)
+	if err != nil {
+		slog.Warn("event observe failed", "source", sourceName, "title", truncateTitle(msg.Title, 60), "error", err)
+		return nil
+	}
+	if observation == nil {
+		return nil
+	}
+	msg.SetMetadata("event_story_id", observation.Story.ID)
+	msg.SetMetadata("event_lane", observation.Decision.Lane)
+	msg.SetMetadata("event_score", observation.Decision.Score)
+	msg.SetMetadata("event_class", observation.Decision.Class)
+	msg.SetMetadata("event_duplicate", observation.Duplicate)
+	if len(observation.Decision.MatchedRules) > 0 {
+		msg.SetMetadata("event_rules", strings.Join(observation.Decision.MatchedRules, ","))
+	}
+	return observation
+}
+
+// eventLaneDecision 把事件车道映射成一次 typed routing 决策：
+// instant → 直推（预算已由事件引擎扣减，这里不再按日限额拦），
+// defer → 聚合版次；archive/silent 不投递。
+func eventLaneDecision(decision *event.Decision) (typedRouteDecision, bool) {
+	if decision == nil {
+		return typedRouteDecision{}, false
+	}
+	switch decision.Lane {
+	case event.LaneInstant:
+		return typedRouteDecision{
+			lane:     digest.RouteDirect,
+			band:     &config.RouteBand{MaxPerDay: 0, Priority: 80},
+			critical: decision.Reason == "critical",
+		}, true
+	case event.LaneDefer:
+		return typedRouteDecision{
+			lane: digest.RouteDigest,
+			band: &config.RouteBand{MaxPerDay: 0, Priority: 40, BriefingTarget: "news_aggregate"},
+		}, true
+	default:
+		return typedRouteDecision{}, false
+	}
 }
 
 func (e *NewsEngine) decideTypedRoute(ctx context.Context, sourceName string, routing *config.SourceRoutingConfig, msg *model.Message) typedRouteDecision {
@@ -230,6 +299,11 @@ func (e *NewsEngine) admitTypedDigest(ctx context.Context, routedStore digest.Ro
 	if err != nil {
 		slog.Error("digest route admission failed", "source", sourceName, "error", err)
 		return false
+	}
+	if admission.Admitted && admission.Existing && admission.Lane != digest.RouteDigest {
+		// 既有 direct 记录：按记录的真实车道处理，不能假装已进 digest。
+		msg.SetMetadata("routing_lane", string(admission.Lane))
+		return true
 	}
 	if !admission.Admitted {
 		msg.SetMetadata("routing_lane", string(digest.RouteSilent))

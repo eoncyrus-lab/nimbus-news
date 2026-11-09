@@ -5,9 +5,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,9 +35,8 @@ import (
 
 // Options contains the deployment locations for the news platform.
 type Options struct {
-	ConfigPath       string
-	ListenAddr       string
-	BootstrapClosing bool
+	ConfigPath string
+	ListenAddr string
 }
 
 type App struct {
@@ -49,6 +50,7 @@ type App struct {
 	channels *channel.Manager
 	llm      llm.Provider
 	options  Options
+	role     string // active|standby|admin
 
 	runMu      sync.Mutex
 	runStarted bool
@@ -83,6 +85,8 @@ func New(options Options) (*App, error) {
 	cleanup := func() { _ = stores.Close() }
 
 	channels := bootstrap.InitChannels(cfg)
+	// digest 送达的幂等记录必须落盘：崩溃重启后重投同一 sink 时要能识别出已送达。
+	channels.SetIdempotencyStore(stores.Store)
 	rawLLM, enhancer := bootstrap.InitLLM(cfg)
 	var llmProvider llm.Provider
 	if rawLLM != nil {
@@ -126,10 +130,23 @@ func New(options Options) (*App, error) {
 	server := api.NewServer(cm, port)
 	server.SetChannelManager(channels)
 	server.SetNewsEngine(engine)
+	role := resolveRole(cfg.Runtime.Role)
+	server.SetRuntimeRole(role)
+	if boltdb, ok := stores.Store.(*store.BoltStore); ok {
+		server.SetStoreSnapshotter(func(w io.Writer) error {
+			_, err := boltdb.Snapshot(context.Background(), w)
+			return err
+		})
+	}
 
 	if llmProvider != nil {
 		cm.Subscribe(func(oldCfg, newCfg *config.PlatformConfig) {
 			if oldCfg == nil || oldCfg.LLM == newCfg.LLM || newCfg.LLM.APIKey == "" {
+				return
+			}
+			// 脱敏占位符不是密钥：宁可继续用旧 provider，也不要把 "***" 装上。
+			if newCfg.LLM.APIKey == "***" {
+				slog.Warn("llm hot swap skipped: masked api key")
 				return
 			}
 			provider := llm.NewOpenAIProvider(llm.Config{
@@ -145,14 +162,49 @@ func New(options Options) (*App, error) {
 		})
 	}
 
-	return &App{
+	app := &App{
 		listener: listener, server: server, stores: stores, marketDB: marketDB,
 		router: router, alert: alertEngine, market: marketService, channels: channels,
-		llm: llmProvider, options: options,
-	}, nil
+		llm: llmProvider, options: options, role: role,
+	}
+	// 人工提升：standby → active 时补齐 active 专属后台（源调度、digest 投递、价格告警）。
+	server.SetPromoteFunc(func() bool {
+		if !router.Promote() {
+			return false
+		}
+		if app.alert != nil && !app.alertOn {
+			if err := app.alert.Start(context.Background()); err != nil {
+				slog.Error("alert start after promote failed", "error", err)
+			} else {
+				app.alertOn = true
+			}
+		}
+		app.role = config.RoleActive
+		return true
+	})
+	return app, nil
 }
 
 func (a *App) Addr() string { return a.listener.Addr().String() }
+
+func (a *App) isActive() bool { return a.role == "" || a.role == config.RoleActive }
+
+// resolveRole 解析生效角色：环境变量优先（双实例共用配置时由宿主机注入）。
+func resolveRole(configured string) string {
+	role := strings.TrimSpace(os.Getenv("NIMBUS_RUNTIME_ROLE"))
+	if role == "" {
+		role = configured
+	}
+	switch role {
+	case config.RoleActive, config.RoleStandby, config.RoleAdmin:
+		return role
+	default:
+		if role != "" {
+			slog.Warn("unknown runtime role, falling back to active", "role", role)
+		}
+		return config.RoleActive
+	}
+}
 
 // Run starts children and fails the whole application if the API listener
 // fails. Cancellation drains resources in reverse construction order.
@@ -168,15 +220,13 @@ func (a *App) Run(ctx context.Context) error {
 	a.runStarted = true
 	a.runMu.Unlock()
 
-	if a.options.BootstrapClosing {
-		source.BootstrapClosingScanDB(source.ClosingScanBootstrapOptions{})
-	}
 	a.routerOn = true
 	if err := a.router.Start(ctx); err != nil {
 		_ = a.Close()
 		return fmt.Errorf("platformapp: start router: %w", err)
 	}
-	if a.alert != nil {
+	// 价格告警同样只在 active 实例运行，standby 不产生任何外部动作。
+	if a.alert != nil && a.isActive() {
 		if err := a.alert.Start(ctx); err != nil {
 			_ = a.Close()
 			return fmt.Errorf("platformapp: start alert: %w", err)

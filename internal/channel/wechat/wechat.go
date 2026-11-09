@@ -300,7 +300,31 @@ func (w *WechatChannel) sendRequest(ctx context.Context, payload interface{}) er
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("wechat response status: %d", resp.StatusCode)
 	}
+	// 企业微信即使推送失败也返回 HTTP 200，真正的结果在 body 的 errcode 里：
+	// 不解析会把"被限流/内容超限/webhook 失效"当成发送成功，消息静默丢失。
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if err != nil {
+		return fmt.Errorf("wechat response read: %w", err)
+	}
+	var result struct {
+		ErrCode int    `json:"errcode"`
+		ErrMsg  string `json:"errmsg"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return fmt.Errorf("wechat response decode: %w (body=%s)", err, truncateForLog(body))
+	}
+	if result.ErrCode != 0 {
+		return fmt.Errorf("wechat api errcode=%d errmsg=%s", result.ErrCode, result.ErrMsg)
+	}
 	return nil
+}
+
+func truncateForLog(body []byte) string {
+	const maxLen = 200
+	if len(body) <= maxLen {
+		return string(body)
+	}
+	return string(body[:maxLen]) + "..."
 }
 
 // newHTTPClient 放宽 TLS 握手超时。本机经 Surge 代理时慢节点握手常需 10s+，

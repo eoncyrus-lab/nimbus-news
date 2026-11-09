@@ -219,3 +219,28 @@ func TestAggregateDigestSinkMetricsSumsUnknownSinks(t *testing.T) {
 		t.Fatalf("known metrics=%+v", got)
 	}
 }
+
+// R10：mirror_channels 必须同样作用于定时简报（digest 版次），
+// 否则镜像渠道只会收到直推新闻，漏掉简报。
+func TestDigestBriefingIncludesMirrorChannels(t *testing.T) {
+	manager := channel.NewManager()
+	manager.Add(&workerTestChannel{BaseChannel: channel.NewBaseChannel("main", "test", channel.ModePush)})
+	manager.Add(&workerTestChannel{BaseChannel: channel.NewBaseChannel("mirror", "test", channel.ModePush)})
+	digests := &workerTestStore{}
+	router := NewRouter(manager)
+	router.SetDigestStore(digests)
+
+	engine := &NewsEngine{router: router, ctx: context.Background(), mirrorChannels: []string{"mirror"}}
+	src := &routingSource{name: "brief", msg: &model.Message{ID: "brief-1", Content: "rendered"}}
+	src.msg.SetMetadata("digest_lease_id", "lease-2")
+	if !engine.fetchAndDispatch(src, newsSourceInfo{channels: []string{"main"}, deliveryMode: "direct"}) {
+		t.Fatal("digest briefing dispatch failed")
+	}
+	if len(digests.prepared) != 1 {
+		t.Fatalf("prepared=%d", len(digests.prepared))
+	}
+	sinks := digests.prepared[0].RequiredSinks
+	if len(sinks) != 2 || sinks[0] != "main" || sinks[1] != "mirror" {
+		t.Fatalf("required sinks=%v, want [main mirror]", sinks)
+	}
+}

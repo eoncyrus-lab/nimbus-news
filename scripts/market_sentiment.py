@@ -23,7 +23,8 @@ from pathlib import Path
 
 # 导入交易日判断工具
 try:
-    from utils import is_trading_day
+    from utils import is_trading_day, install_network_timeouts
+    install_network_timeouts()
 except ImportError:
     is_trading_day = lambda d=None: True  # 降级：假设都是交易日
 
@@ -141,6 +142,8 @@ class MarketSentimentFetcher:
         self.quiet = quiet
         self.cache = CacheManager() if use_cache else None
         self._api_failure_count = {}  # API 失败计数
+        self._spot_df = None          # 全市场快照只拉一次（akshare 内部按 100 只/页翻 59 页）
+        self._spot_loaded = False
 
         try:
             import akshare as ak
@@ -176,6 +179,13 @@ class MarketSentimentFetcher:
                     continue
                 self._log(f"[WARN] API 调用失败 (重试{max_retries}次后): {e}")
         return None
+
+    def get_spot_df(self):
+        """全市场实时快照，单次进程内复用，避免重复翻页。"""
+        if not self._spot_loaded:
+            self._spot_loaded = True
+            self._spot_df = self._retry_call(lambda: self.ak.stock_zh_a_spot_em())
+        return self._spot_df
 
     def get_index_data(self) -> List[IndexData]:
         """获取主要指数数据（带容错）"""
@@ -236,7 +246,7 @@ class MarketSentimentFetcher:
         df = None
 
         # 方法1: 东方财富实时行情（主要）
-        df = self._retry_call(lambda: self.ak.stock_zh_a_spot_em())
+        df = self.get_spot_df()
 
         # 方法2: 使用乐股网统计数据（备用）
         if df is None or df.empty:
@@ -353,7 +363,7 @@ class MarketSentimentFetcher:
     def get_total_volume(self) -> float:
         """获取全市场成交额（亿）"""
         try:
-            df = self.ak.stock_zh_a_spot_em()
+            df = self.get_spot_df()
             if df is not None and not df.empty:
                 vol_col = '成交额'
                 if vol_col not in df.columns:

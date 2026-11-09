@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Ricaardo/nimbus-os/news/internal/channel"
+	"github.com/Ricaardo/nimbus-os/news/internal/config"
 	"github.com/Ricaardo/nimbus-os/news/internal/llm"
 	"github.com/Ricaardo/nimbus-os/news/internal/model"
 	"github.com/Ricaardo/nimbus-os/news/internal/source"
@@ -614,7 +615,7 @@ func TestFetchOnlyReturnsMessagesAndRecordsSuccess(t *testing.T) {
 	hm := source.NewHealthMonitor(source.HealthConfig{DegradedThreshold: 3, UnhealthyThreshold: 5})
 	hm.RegisterSource("one")
 	engine := &NewsEngine{
-		sources: map[string]source.Source{"one": src},
+		sources:     map[string]source.Source{"one": src},
 		sourceInfos: []newsSourceInfo{{name: "one"}},
 		running:     true, ctx: context.Background(),
 		healthMonitor: hm,
@@ -646,7 +647,7 @@ func TestFetchOnlyEmptyDoesNotTouchHealth(t *testing.T) {
 		t.Fatalf("precondition: status = %s, want unhealthy", got.Status)
 	}
 	engine := &NewsEngine{
-		sources: map[string]source.Source{"one": src},
+		sources:     map[string]source.Source{"one": src},
 		sourceInfos: []newsSourceInfo{{name: "one"}},
 		running:     true, ctx: context.Background(),
 		healthMonitor: hm,
@@ -670,7 +671,7 @@ func TestFetchOnlyFailureRecordsHealth(t *testing.T) {
 	hm := source.NewHealthMonitor(source.HealthConfig{DegradedThreshold: 3, UnhealthyThreshold: 5})
 	hm.RegisterSource("one")
 	engine := &NewsEngine{
-		sources: map[string]source.Source{"one": src},
+		sources:     map[string]source.Source{"one": src},
 		sourceInfos: []newsSourceInfo{{name: "one"}},
 		running:     true, ctx: context.Background(),
 		healthMonitor: hm,
@@ -699,7 +700,7 @@ func TestFetchOnlyConcurrentGate(t *testing.T) {
 		return []*model.Message{{ID: "a", Title: "A"}}, nil
 	}}
 	engine := &NewsEngine{
-		sources: map[string]source.Source{"one": src},
+		sources:     map[string]source.Source{"one": src},
 		sourceInfos: []newsSourceInfo{{name: "one"}},
 		running:     true, ctx: context.Background(),
 	}
@@ -726,5 +727,51 @@ func TestFetchOnlyErrors(t *testing.T) {
 	engine = &NewsEngine{sources: map[string]source.Source{}, running: true, ctx: context.Background()}
 	if _, err := engine.FetchOnly(context.Background(), "nope"); err == nil {
 		t.Fatal("missing source should error")
+	}
+}
+
+// 双实例角色：standby 常驻但不摄入；promote 之后才开始抓源。
+func TestStandbyEngineDoesNotFetchUntilPromoted(t *testing.T) {
+	var fetches atomic.Int32
+	source.Register("role-test-source", func(cfg source.Config) (source.Source, error) {
+		return &lifecycleTestSource{name: cfg.Name, fetch: func() ([]*model.Message, error) {
+			fetches.Add(1)
+			return nil, nil
+		}}, nil
+	})
+	engine, err := NewNewsEngine(NewsEngineConfig{
+		Sources: []SourceConfig{{Name: "one", Type: "role-test-source", Interval: 1}},
+		Role:    config.RoleStandby,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	engine.Start(ctx)
+	defer engine.Stop()
+
+	time.Sleep(300 * time.Millisecond)
+	if got := fetches.Load(); got != 0 {
+		t.Fatalf("standby fetched %d times, want 0", got)
+	}
+	if engine.Role() != config.RoleStandby {
+		t.Fatalf("role=%q", engine.Role())
+	}
+	if !engine.Promote() {
+		t.Fatal("standby promote failed")
+	}
+	if engine.Role() != config.RoleActive {
+		t.Fatalf("role after promote=%q", engine.Role())
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for fetches.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if fetches.Load() == 0 {
+		t.Fatal("promoted engine did not start fetching")
+	}
+	if engine.Promote() {
+		t.Fatal("promote must be rejected once already active")
 	}
 }

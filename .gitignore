@@ -63,3 +63,5 @@ scripts/.fedwatch_zq_cache.json
 *.tmp
 *.temp
 *.swp
+.venv/
+venv/

@@ -44,11 +44,13 @@ mv -f "$BIN/platform" "$BIN/platform.prev" 2>/dev/null || true
 mv -f "$BIN/platform.new" "$BIN/platform"
 systemctl restart news-platform
 
-# 4. 健康检查（轮询等待 API 就绪，最多 60s），失败回滚
+# 4. 存活检查（轮询等待进程 + API 就绪，最多 60s），失败回滚
+#    只看 /api/health/live（进程级）；/api/health 是就绪探针，digest 积压也会 503，
+#    拿它判定会把正常新版本回滚掉。
 healthy=0
 for _ in $(seq 1 30); do
   if systemctl is-active news-platform >/dev/null 2>&1 \
-     && curl -sf -m 3 http://127.0.0.1:8081/api/health >/dev/null 2>&1; then
+     && curl -sf -m 3 http://127.0.0.1:8081/api/health/live >/dev/null 2>&1; then
     healthy=1
     break
   fi

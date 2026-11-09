@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd 模板。不要直接安装本文件：路径占位符由 deploy/install-launchd.sh 替换。
+
+  安装：
+    ./deploy/install-launchd.sh
+  重载（改完 .env 或换二进制）：
+    launchctl kickstart -k gui/$(id -u)/com.news.platform
+  卸载：
+    launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.news.platform.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.news.platform</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__ROOT__/deploy/launch-mac.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__ROOT__</string>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>ThrottleInterval</key>
+  <integer>15</integer>
+
+  <!-- 日志放 ~/Library/Logs：launchd 对 ~/Documents 有 TCC 限制 -->
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/news-platform.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/news-platform.err.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>TZ</key>
+    <string>Asia/Shanghai</string>
+    <key>PATH</key>
+    <string>__ROOT__/venv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+</dict>
+</plist>

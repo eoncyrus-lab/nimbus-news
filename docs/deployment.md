@@ -5,6 +5,7 @@
 - **代码仓**：本地 `~/nimbus-news`（唯一 git 仓库，两仓制：nimbus-os 持 datasources/guanfu 模块，经 go.mod replace 引用）
 - **运行机**：VPS（`root@45.77.26.44`），部署目录 `/opt/news`
 - **服务**：systemd `news-platform.service`（`Type=simple`，ExecStart=`deploy/launch-vps.sh`，TZ=Asia/Shanghai）
+- **角色**：VPS 为 `active`；Mac 为 `standby`（同配置，`NIMBUS_RUNTIME_ROLE` 或 `runtime.role` 注入）
 - **进程**：`./bin/platform -config config.platform.vps.yaml`，API 仅监听 127.0.0.1:8081
 
 VPS 关键目录：
@@ -35,12 +36,29 @@ VPS cron 每 5 分钟跑 `deploy/vps-build-deploy.sh`：
 1. `git fetch` 对比 `.deployed-commit`，无新提交直接退出
 2. 有更新 → `git pull` → `go build`（`GOTMPDIR=/opt/news/tmp`，避免 /tmp tmpfs 不足）
 3. 原子替换 `bin/platform.new → platform` + `systemctl restart`
-4. 轮询 `/api/health` 最多 60s；失败自动回滚旧二进制
+4. 轮询 `/api/health/live` 最多 60s；失败自动回滚旧二进制（就绪探针 `/api/health` 不参与判定）
 5. 成功则更新 `.deployed-commit`
 
 构建环境：VPS 装 Go 1.26.3（/usr/local/go）；私有仓认证用两个 GitHub
 deploy key（nimbus-news / nimbus-os 各一），经 `~/.ssh/config` 的
 `github-news` / `github-os` alias 区分。
+
+## Mac（launchd，standby）
+
+```bash
+make install-mac          # 构建 + 渲染 plist + bootstrap
+make uninstall-mac        # 卸载
+```
+
+plist 由 `deploy/com.news.platform.plist.template` 渲染（`__ROOT__`/`__HOME__` 占位），
+`deploy/launch-mac.sh` 负责加载 `.env`、前置 venv、固定 `TZ=Asia/Shanghai`。
+
+离线备份：`deploy/mac-backup.sh` 通过 ssh 让 VPS 现场生成快照再取回，保留 7 份。
+建议加入本机 crontab：
+
+```cron
+30 3 * * * /path/to/repo/deploy/mac-backup.sh >> ~/Library/Logs/news-backup.log 2>&1
+```
 
 ## 配置文件同步（本地为真源）
 
@@ -59,8 +77,8 @@ deploy key（nimbus-news / nimbus-os 各一），经 `~/.ssh/config` 的
 | 任务 | 触发 | 内容 |
 |---|---|---|
 | 自动构建部署 | 每 5 分钟 | `vps-build-deploy.sh`：新 commit → 构建 → 替换 → 重启 → 健康检查（失败回滚） |
-| 数据备份 | 每日 03:15 | `tar czf backups/platform.$(date +%Y%m%d).db.tgz data/platform.db`，保留 7 天自动删除 |
-| 外部探活 | 每 5 分钟 | `health-probe.sh`：curl `/api/health`，**连续 3 次**失败 → 企业微信 webhook 告警（独立于平台进程） |
+| 数据备份 | 每日 03:15 | `POST /api/store/snapshot`（进程内一致性快照），保留 7 天自动删除 |
+| 外部探活 | 每 5 分钟 | `health-probe.sh`：curl `/api/health/live`，**连续 3 次**失败 → 企业微信 webhook 告警（独立于平台进程） |
 
 手动操作：
 
@@ -71,6 +89,23 @@ tail -f /opt/news/logs/platform.out.log  # 平台日志
 tail -f /opt/news/logs/build-deploy.log  # 构建部署日志
 journalctl -u news-platform -e           # systemd 侧日志
 crontab -l                               # 三条 cron（构建/备份/探活）
+```
+
+## Mac（launchd，standby）
+
+```bash
+make install-mac          # 构建 + 渲染 plist + bootstrap
+make uninstall-mac        # 卸载
+```
+
+plist 由 `deploy/com.news.platform.plist.template` 渲染（`__ROOT__`/`__HOME__` 占位），
+`deploy/launch-mac.sh` 负责加载 `.env`、前置 venv、固定 `TZ=Asia/Shanghai`。
+
+离线备份：`deploy/mac-backup.sh` 通过 ssh 让 VPS 现场生成快照再取回，保留 7 份。
+建议加入本机 crontab：
+
+```cron
+30 3 * * * /path/to/repo/deploy/mac-backup.sh >> ~/Library/Logs/news-backup.log 2>&1
 ```
 
 ## 配置
@@ -87,7 +122,7 @@ crontab -l                               # 三条 cron（构建/备份/探活）
 
 ```bash
 cd ~/nimbus-news
-make python-deps          # venv 装 scripts 依赖（akshare/ecocal 等，见 scripts/requirements.txt）
+make python-deps          # 建 venv 并安装 scripts 依赖（akshare/ecocal 等，见 scripts/requirements.txt）
 make build-native         # 本地 go build ./cmd/platform
 go run ./cmd/platform -config config.platform.yaml   # 本地起服务（8081）
 ```

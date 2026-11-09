@@ -177,9 +177,9 @@ func TestSourceAPIsRejectMaskedCreateAndCredentialCommands(t *testing.T) {
 }
 
 // TestNewsAggregateSourcesConfigured 验证新闻聚合源配置形态:
-// 早报/晚报各一个,由 market-briefing 在内部调用 BlockBeats 脚本
-// (blockbeats_mode),不再有独立 script 源/命令(凭据走进程环境)。
-func TestNewsAggregateSourcesConfigured(t *testing.T) {
+// 2026-11-09 起不再有独立的 aggregate/pre-market/closing/us-* 源：
+// 三个按市场时段的 session 源各推一条，成员在 options.members 里组装。
+func TestSessionBriefingSourcesConfigured(t *testing.T) {
 	cfg, err := config.LoadPlatform(filepath.Join("..", "..", "config.platform.yaml.example"))
 	if err != nil {
 		t.Fatal(err)
@@ -190,35 +190,45 @@ func TestNewsAggregateSourcesConfigured(t *testing.T) {
 	}
 	want := []struct {
 		name    string
-		sched   string
-		mode    string
+		sched   []string
+		session string
 	}{
-		{"news-aggregate-morning", "09:25", "morning"},
-		{"news-aggregate-evening", "19:30", "evening"},
+		{"session-morning", []string{"09:20", "09:40", "11:35", "15:05"}, "morning"},
+		{"session-close", []string{"16:10"}, "close"},
+		{"session-us", []string{"21:00", "22:00"}, "us"},
+		{"session-us-close", []string{"08:05", "09:05"}, "us_close"},
+		{"session-week", []string{"20:00"}, "week"},
 	}
 	for _, w := range want {
 		src, ok := byName[w.name]
 		if !ok {
-			t.Fatalf("aggregate source %s missing", w.name)
+			t.Fatalf("session source %s missing", w.name)
 		}
-		if len(src.Schedule) != 1 || src.Schedule[0] != w.sched {
-			t.Fatalf("%s schedule=%v", w.name, src.Schedule)
-		}
-		if src.Type != "market-briefing" {
+		if src.Type != "session" {
 			t.Fatalf("%s type=%s", w.name, src.Type)
 		}
-		if mode, _ := src.Options["blockbeats_mode"].(string); mode != w.mode {
-			t.Fatalf("%s blockbeats_mode=%v", w.name, src.Options["blockbeats_mode"])
+		if len(src.Schedule) != len(w.sched) {
+			t.Fatalf("%s schedule=%v want %v", w.name, src.Schedule, w.sched)
 		}
-		if bt, _ := src.Options["briefing_type"].(string); bt != "aggregate" {
-			t.Fatalf("%s briefing_type=%v", w.name, src.Options["briefing_type"])
+		for i := range w.sched {
+			if src.Schedule[i] != w.sched[i] {
+				t.Fatalf("%s schedule=%v want %v", w.name, src.Schedule, w.sched)
+			}
 		}
-		// 无 command/push_output:脚本由聚合源内部调用,不暴露凭据面
-		if _, has := src.Options["command"]; has {
-			t.Fatalf("%s must not carry command", w.name)
+		if session, _ := src.Options["session"].(string); session != w.session {
+			t.Fatalf("%s session=%v", w.name, src.Options["session"])
+		}
+		members, _ := src.Options["members"].([]interface{})
+		if len(members) < 1 {
+			t.Fatalf("%s members=%d, want at least 1", w.name, len(members))
 		}
 		if src.Routing != nil {
 			t.Fatalf("%s must not carry typed routing", w.name)
+		}
+	}
+	for _, legacy := range []string{"pre-market-briefing", "closing-briefing", "us-preview", "us-macro-report", "news-aggregate-morning", "news-aggregate-evening", "econ-calendar"} {
+		if _, ok := byName[legacy]; ok {
+			t.Fatalf("legacy scheduled source %s still configured", legacy)
 		}
 	}
 }
@@ -245,5 +255,32 @@ func assertConfigStatus(t *testing.T, server *Server, method, path, body string,
 	server.GetRouter().ServeHTTP(recorder, request)
 	if recorder.Code != want {
 		t.Fatalf("status=%d want=%d body=%s", recorder.Code, want, recorder.Body.String())
+	}
+}
+
+// R6：filters 等只在启动时构建的配置段，写入后必须如实返回 restart_required，
+// 不能返回 200 + "updated" 让调用方以为已经生效。
+func TestConfigSectionUpdatesReportRestartRequired(t *testing.T) {
+	server := newConfigTestServer(t)
+	for _, tc := range []struct{ path, body string }{
+		{"/api/config/filters", `{"enabled":true}`},
+		{"/api/config/alert", `{"enabled":true}`},
+		{"/api/config/health", `{"enabled":true}`},
+	} {
+		request := httptest.NewRequest(http.MethodPut, tc.path, strings.NewReader(tc.body))
+		request.RemoteAddr = "127.0.0.1:12345"
+		request.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		server.GetRouter().ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", tc.path, recorder.Code, recorder.Body.String())
+		}
+		var payload map[string]interface{}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("%s body=%s", tc.path, recorder.Body.String())
+		}
+		if _, ok := payload["restart_required"]; !ok {
+			t.Fatalf("%s must report restart_required, body=%s", tc.path, recorder.Body.String())
+		}
 	}
 }

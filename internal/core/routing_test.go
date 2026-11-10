@@ -240,7 +240,7 @@ func TestTypedRouteDecisionBoundariesAndFailures(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			provider := &typedProvider{response: tt.response, err: tt.providerErr}
-			chain := filter.NewChain(filter.NewAIFilter(provider, filter.AIFilterConfig{MaxPerMinute: 100}))
+			chain := filter.NewChain(filter.NewAIFilter(provider, filter.AIFilterConfig{Enabled: true, MaxPerMinute: 100}))
 			engine := &NewsEngine{filters: chain}
 			routing := typedRoutingPolicy()
 			msg := &model.Message{ID: tt.name, Title: "headline", Content: "content", Metadata: map[string]interface{}{}}
@@ -252,6 +252,22 @@ func TestTypedRouteDecisionBoundariesAndFailures(t *testing.T) {
 				t.Fatalf("lane=%q status=%q calls=%d, want %q %q %d", got.lane, got.eval.Status, provider.calls, tt.want, tt.wantStatus, tt.wantCalls)
 			}
 		})
+	}
+}
+
+// AI 门禁关闭时，required 源也按默认路由走，不被 on_ai_failure: silent 吞掉。
+func TestTypedRouteDisabledAIGoesToDefaultRoute(t *testing.T) {
+	provider := &typedProvider{response: "10|重要|高影响"}
+	chain := filter.NewChain(filter.NewAIFilter(provider, filter.AIFilterConfig{Enabled: false, MaxPerMinute: 100}))
+	engine := &NewsEngine{filters: chain}
+	routing := typedRoutingPolicy()
+	routing.Default = config.RouteDefaultDigest // digest 默认，验证不走 silent
+	got := engine.decideTypedRoute(context.Background(), "feed", routing, &model.Message{ID: "disabled"})
+	if got.lane != digest.RouteDigest || got.eval.Status != filter.EvalDisabled {
+		t.Fatalf("disabled decision=%+v", got)
+	}
+	if provider.calls != 0 {
+		t.Fatalf("disabled gate called LLM %d times", provider.calls)
 	}
 }
 
@@ -376,7 +392,7 @@ func TestEventShadowKeepsTypedRouting(t *testing.T) {
 func TestTypedBlockedCategoryIsAlwaysSilent(t *testing.T) {
 	provider := &typedProvider{response: "10|无价值|高分但无交易价值"}
 	engine := &NewsEngine{filters: filter.NewChain(filter.NewAIFilter(provider, filter.AIFilterConfig{
-		MaxPerMinute: 100, GlobalMaxPerMinute: 100, BlockCategories: []string{"无价值", "无关"},
+		Enabled: true, MaxPerMinute: 100, GlobalMaxPerMinute: 100, BlockCategories: []string{"无价值", "无关"},
 	}))}
 	decision := engine.decideTypedRoute(context.Background(), "feed", typedRoutingPolicy(),
 		&model.Message{ID: "blocked", Title: "headline"})
@@ -400,7 +416,7 @@ func TestTypedDirectQuotaDowngradesAndPriorityIsBounded(t *testing.T) {
 	provider := &typedProvider{response: "10|重要|高影响"}
 	store := &typedRoutedStore{directAdmission: digest.RouteAdmission{Admitted: false, Lane: digest.RouteDirect}}
 	engine := &NewsEngine{
-		filters:     filter.NewChain(filter.NewAIFilter(provider, filter.AIFilterConfig{MaxPerMinute: 100})),
+		filters:     filter.NewChain(filter.NewAIFilter(provider, filter.AIFilterConfig{Enabled: true, MaxPerMinute: 100})),
 		digestStore: store,
 	}
 	attachSuccessfulTypedRouter(engine)
@@ -462,7 +478,7 @@ func TestTypedCriticalBypassesAIAndQuotaLimitButRecordsAdmission(t *testing.T) {
 	provider := &typedProvider{response: "1|一般|不应调用"}
 	store := &typedRoutedStore{directAdmission: digest.RouteAdmission{Admitted: true, Lane: digest.RouteDirect}}
 	engine := &NewsEngine{
-		filters:     filter.NewChain(filter.NewAIFilter(provider, filter.AIFilterConfig{MaxPerMinute: 100})),
+		filters:     filter.NewChain(filter.NewAIFilter(provider, filter.AIFilterConfig{Enabled: true, MaxPerMinute: 100})),
 		digestStore: store,
 	}
 	attachSuccessfulTypedRouter(engine)
@@ -490,7 +506,7 @@ func TestTypedDirectPartialFailureRetriesWithoutFallbackOrRecharge(t *testing.T)
 	manager.Add(succeeded)
 	manager.Add(failed)
 	engine := &NewsEngine{
-		filters:     filter.NewChain(filter.NewAIFilter(provider, filter.AIFilterConfig{MaxPerMinute: 100})),
+		filters:     filter.NewChain(filter.NewAIFilter(provider, filter.AIFilterConfig{Enabled: true, MaxPerMinute: 100})),
 		digestStore: store,
 		router:      NewRouter(manager),
 	}
@@ -529,7 +545,7 @@ func TestTypedRoutingKeepsRawArchivePreEvaluation(t *testing.T) {
 	routed := &typedRoutedStore{}
 	engine := &NewsEngine{
 		ctx:         context.Background(),
-		filters:     filter.NewChain(filter.NewAIFilter(provider, filter.AIFilterConfig{MaxPerMinute: 100})),
+		filters:     filter.NewChain(filter.NewAIFilter(provider, filter.AIFilterConfig{Enabled: true, MaxPerMinute: 100})),
 		digestStore: routed,
 		newsStore:   archive,
 	}

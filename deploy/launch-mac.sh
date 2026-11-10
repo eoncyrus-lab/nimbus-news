@@ -17,9 +17,10 @@ fi
 
 CONFIG="${NIMBUS_CONFIG:-config.platform.yaml}"
 
-# 双实例：Mac 默认 standby（只读常驻），避免和 VPS 双活。
-# .env 里显式设置 NIMBUS_RUNTIME_ROLE=active/admin 可覆盖。
-export NIMBUS_RUNTIME_ROLE="${NIMBUS_RUNTIME_ROLE:-standby}"
+# 运行角色默认 active（唯一摄入/推送实例）。环境变量优先：需要让本机
+# 退回收只读 standby / admin 时，在 .env 里显式设置 NIMBUS_RUNTIME_ROLE 覆盖。
+# 注意：多实例同时设 active 会重复推送，切换前先确认另一实例已停用。
+export NIMBUS_RUNTIME_ROLE="${NIMBUS_RUNTIME_ROLE:-active}"
 
 # 调度器按本地时区计算推送时间，必须固定为北京时间
 export TZ=Asia/Shanghai

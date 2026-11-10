@@ -54,9 +54,10 @@ func InitFilters(
 		}
 	}
 
-	// Blocking AI filter (LRU-cached, passes through on LLM error). Typed
-	// routing also uses this evaluator, even when the legacy global filter is
-	// disabled; ShouldFilter remains disabled in that case.
+	// 未配置 LLM（llmProvider == nil）时绝不挂 AI 过滤器，推送不受 AI 影响。
+	// 配了 LLM 时仍挂入 chain 供 typed routing 的 EvaluateTyped 复用；是否实际
+	// 拦截由 Enabled 决定（ShouldFilter 在 false 时直接放行），LLM 报错/限流也
+	// fail-open。日志如实标注启用状态，避免把「已挂载求值器」误读成「已开启拦截」。
 	if llmProvider != nil {
 		chain.Add(filter.NewAIFilter(llmProvider, filter.AIFilterConfig{
 			Enabled:            cfg.Filters.AIFilter.Enabled,
@@ -66,8 +67,14 @@ func InitFilters(
 			BlockCategories:    cfg.Filters.AIFilter.BlockCategories,
 			TargetSources:      cfg.Filters.AIFilter.TargetSources,
 		}))
-		slog.Info("blocking ai_filter enabled", "threshold", cfg.Filters.AIFilter.ThresholdScore,
-			"target_sources", len(cfg.Filters.AIFilter.TargetSources))
+		if cfg.Filters.AIFilter.Enabled {
+			slog.Info("blocking ai_filter enabled", "threshold", cfg.Filters.AIFilter.ThresholdScore,
+				"target_sources", len(cfg.Filters.AIFilter.TargetSources))
+		} else {
+			slog.Info("ai_filter evaluator mounted but disabled; news delivery is not gated by AI", "reason", "enabled=false")
+		}
+	} else {
+		slog.Info("ai_filter not mounted; news delivery is not gated by AI", "reason", "LLM provider not configured")
 	}
 
 	// Rate limit

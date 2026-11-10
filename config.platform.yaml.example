@@ -677,9 +677,13 @@ filters:
         sink: "*"
         max_per_minute: 100
 
-  # ai_filter 现在是阻塞式门禁（评分<6 或 无价值/无关 直接拦截），不再只打分。
+  # ai_filter 是阻塞式门禁（评分<6 或 无价值/无关 直接拦截），不再只打分。
+  # 默认关闭：未配置 LLM/AI 时，任何 ai_filter 状态都不应拦截推送。
+  # 各源 routing.ai_policy 也统一为 bypass，AI 只做翻译、不参与路由。
+  # 确需启用时，先确认 LLM 可用并把对应源改为 ai_policy: required；
+  # LLM 报错/限流时代码仍 fail-open（放行），但启用后会改变推送量。
   ai_filter:
-    enabled: true
+    enabled: false
     threshold_score: 6.5  # 2026-07-31: 7.5→6.5 — score 7 条目(重要信号)此前全被误杀,24条/天漏诊
     max_per_minute: 30
     global_max_per_minute: 60

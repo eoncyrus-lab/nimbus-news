@@ -28,6 +28,9 @@ const (
 	EvalParseError    EvalStatus = "parse_error"
 	EvalRateLimited   EvalStatus = "rate_limited"
 	EvalUnavailable   EvalStatus = "unavailable"
+	// EvalDisabled 表示 AI 门禁被配置显式关闭：不是评估失败，不应把消息判成
+	// 拦截或静默丢弃，调用方应按无 AI 的默认路由处理。
+	EvalDisabled EvalStatus = "disabled"
 )
 
 // AsyncEvaluator 异步 AI 新闻评估器

@@ -141,6 +141,10 @@ func (f *AIFilter) EvaluateTyped(ctx context.Context, sourceName string, msg *mo
 	if f == nil || f.provider == nil {
 		return EvalResult{Status: EvalUnavailable, Reason: "AI评估器不可用"}
 	}
+	// 门禁关闭时不调用 LLM，也不产出「拦截」结论：AI 未启用不得影响推送。
+	if !f.config.Enabled {
+		return EvalResult{Status: EvalDisabled, Reason: "AI门禁未启用"}
+	}
 	cacheKey := f.generateTypedKey(sourceName, msg)
 	if cached, ok := f.typedLRU.Get(cacheKey); ok {
 		return cached.(EvalResult)

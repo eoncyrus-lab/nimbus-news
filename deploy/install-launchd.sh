@@ -38,7 +38,7 @@ plutil -lint "$TARGET" >/dev/null || { echo "ERROR: 渲染出的 plist 不合法
 launchctl bootout "gui/$(id -u)" "$TARGET" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$TARGET"
 echo "已加载 $LABEL -> $TARGET"
-echo "配置：$ROOT/$CONFIG（角色默认 standby，可在 .env 覆盖）"
+echo "配置：$ROOT/$CONFIG（角色默认 active 长期推送，可在 .env 覆盖为 standby/admin）"
 
 # 给进程启动留出时间；只做提示，不影响已完成的安装。
 ready=0

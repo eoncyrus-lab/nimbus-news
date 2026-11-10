@@ -175,6 +175,10 @@ func (e *NewsEngine) decideTypedRoute(ctx context.Context, sourceName string, ro
 	}
 
 	result := e.evaluateTyped(ctx, sourceName, msg)
+	if result.Status == filter.EvalDisabled {
+		// AI 门禁被显式关闭：按无 AI 的默认路由走，不按「AI 失败」静默丢弃。
+		return defaultTypedRoute(routing, result)
+	}
 	if result.Status != filter.EvalSuccess {
 		if routing.OnAIFailure == config.RouteDefaultDigest {
 			return typedRouteDecision{lane: digest.RouteDigest, band: routing.Digest, eval: result}

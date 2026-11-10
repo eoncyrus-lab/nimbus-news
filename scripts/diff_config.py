@@ -3,7 +3,7 @@
 
 真实配置不入库（含密钥/部署差异），模板改了不会自动生效。部署前先跑：
 
-    make config-diff CONFIG=config.platform.vps.yaml
+    make config-diff CONFIG=config.platform.yaml
 
 密钥字段（webhook/token/key/secret/password）不比较，避免把明文打到终端。
 退出码：0 一致，1 有差异，2 读取失败。

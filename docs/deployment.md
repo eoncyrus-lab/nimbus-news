@@ -1,71 +1,27 @@
-# 部署说明（当前架构：VPS 自构建，push 即部署，2026-08-16 起）
+# 部署说明
 
 ## 拓扑
 
-- **代码仓**：本地 `~/work/nimbus-news`（唯一 git 仓库，两仓制：nimbus-os 持 datasources/guanfu 模块，经 go.mod replace 引用）
-- **运行机**：VPS（`root@45.77.26.44`），部署目录 `/opt/news`
-- **服务**：systemd `news-platform.service`（`Type=simple`，ExecStart=`deploy/launch-vps.sh`，TZ=Asia/Shanghai）
-- **角色**：Mac 为 `active`（长期推送，默认由 `launch-mac.sh` 注入 `NIMBUS_RUNTIME_ROLE=active`）；
-  `.env` 可覆盖为 `standby`/`admin`。同一时刻只能有一个 `active` 实例，
-  启用另一实例前先把本机的角色退回收只读，否则会重复推送。
-- **进程**：`./bin/platform -config config.platform.vps.yaml`，API 仅监听 127.0.0.1:8081
-
-VPS 关键目录：
-
-```
-/opt/news/
-├── bin/platform              # 部署二进制（VPS 本地构建，owner root）
-├── scripts/ → src/nimbus-news/scripts   # git 软链，随源码自动更新
-├── deploy/  → src/nimbus-news/deploy    # git 软链（脚本/服务文件）
-├── src/nimbus-news/          # git 源码仓（deploy key 认证）
-├── src/nimbus-os/            # git 源码仓（datasources/guanfu 模块）
-├── venv/                     # python + akshare/ecocal（脚本源依赖）
-├── config.platform.vps.yaml  # 含密钥，gitignored，本地为真源
-├── .env                      # 密钥真源（不提交、本地无副本）
-├── data/ logs/ backups/ tmp/ # 运行数据/日志/备份/构建临时目录
-└── .deployed-commit          # 当前已部署的 commit hash
-```
-
-## 部署（push 即部署）
-
-```bash
-cd ~/work/nimbus-news
-git push origin main          # 唯一部署动作
-```
-
-VPS cron 每 5 分钟跑 `deploy/vps-build-deploy.sh`：
-
-1. `git fetch` 对比 `.deployed-commit`，无新提交直接退出
-2. 有更新 → `git pull` → `go build`（`GOTMPDIR=/opt/news/tmp`，避免 /tmp tmpfs 不足）
-3. 原子替换 `bin/platform.new → platform` + `systemctl restart`
-4. 轮询 `/api/health/live` 最多 60s；失败自动回滚旧二进制（就绪探针 `/api/health` 不参与判定）
-5. 成功则更新 `.deployed-commit`
-
-构建环境：VPS 装 Go 1.26.3（/usr/local/go）；私有仓认证用两个 GitHub
-deploy key（nimbus-news / nimbus-os 各一），经 `~/.ssh/config` 的
-`github-news` / `github-os` alias 区分。
-
-**代码自动部署，配置不会。** `config.platform.vps.yaml` 与 `.env` 不在 git 里，
-模板变更需要按下一节手动合并。
+- **代码仓**：`nimbus-news`（唯一 git 仓库；nimbus-os 持 datasources/guanfu 模块，经 go.mod replace 引用）
+- **运行实例**：同一时刻只能有一个 `active` 实例（唯一摄入/推送），其余为 `standby`/`admin` 只读。
+  当前默认由 Mac 承担 `active`，`deploy/launch-mac.sh` 注入 `NIMBUS_RUNTIME_ROLE=active`。
+- **进程**：`./bin/platform -config config.platform.yaml`，API 仅监听 127.0.0.1:8081
+- **守护**：本机 launchd（`com.news.platform`）；其他 Linux 主机用 systemd，见下文「通用部署方案」。
+- 双活会重复推送：启用另一实例前，先把当前实例的角色在 `.env` 里退回 `standby`/`admin` 并重启。
 
 ## Mac（launchd，active 长期推送）
 
-Mac 是常驻的**推送实例**：负责摄入、投递与生成简报。配置与 VPS 分开：
-Mac 用 `config.platform.yaml`，VPS 用 `config.platform.vps.yaml`。
-`standby`/`admin` 只用于临时把本机退回收只读（例如另一实例接管时），
-通过 `.env` 的 `NIMBUS_RUNTIME_ROLE` 覆盖。
+Mac 是常驻的**推送实例**：负责摄入、投递与生成简报。
 
 ### 前置
 
 - macOS + Go 1.26+（`go version`）
-- Python 3.12（推荐）。`make python-deps PYTHON=python3.12` 可指定解释器；
-  默认 `python3` 若版本过新，`ecocal` 等包可能没有预编译 wheel
+- Python 3.12（`make python-deps` 默认用 `python3.12`；3.14 上 akshare 等包无预编译 wheel）
 - 仓库路径固定：plist 渲染时会写入绝对路径，移动仓库后必须重新 `make install-mac`
 
 ### 首次部署
 
 ```bash
-cd ~/work/nimbus-news
 make mac-bootstrap          # 生成 config/.env → 建 .venv 装依赖 → 构建 → 注册 launchd
 $EDITOR .env                # 填 webhook/API key；角色默认 active（长期推送）
 make mac-status             # 看 launchd 状态 + /api/health/live + /api/health
@@ -75,8 +31,8 @@ make mac-status             # 看 launchd 状态 + /api/health/live + /api/healt
 已有 `config.platform.yaml`、`.env` 不会被覆盖，可以重复执行。日常 `make install-mac`
 也会先跑 `make init`：配置文件缺失时自动按模板生成，已有文件保持不动。
 
-真实配置不入库：`config.platform.yaml`、`config.platform.vps.yaml` 都含部署差异
-（后者还含密钥），仓库只保留 `config.platform.yaml.example`；密钥统一写进 `.env`。
+真实配置不入库：`config.platform.yaml` 含部署差异，仓库只保留
+`config.platform.yaml.example`；密钥统一写进 `.env`。
 
 ### 日常更新
 
@@ -107,7 +63,6 @@ make mac-restart
 
 - `deploy/launch-mac.sh` 在 `.env` 未设置 `NIMBUS_RUNTIME_ROLE` 时注入 `active`
   （长期推送）。要退回只读，在 `.env` 写 `standby`/`admin` 后 `make mac-restart`。
-- 同一时刻只能有一个 `active` 实例；启用另一实例前先确认本机角色，避免双活重复推送。
 - 临时接管：`curl -X POST 127.0.0.1:8081/api/runtime/promote`
   （配置了 `NIMBUS_ADMIN_TOKEN` 时带 `Authorization: Bearer <token>`）；
   重启后回到 `.env` 里的角色。
@@ -124,6 +79,11 @@ make mac-restart
 
 确需启用 AI 门禁时：先确认 LLM 可用，把 `enabled` 改为 `true` 并将对应源改为
 `ai_policy: required`，再观察 `ai_filter blocked` 日志量后决定是否上线。
+
+### 出网代理
+
+企业微信 webhook 建议直连：代理出口 IP 被多方共用时会触发 `45009 Too many requests`。
+配了 `HTTP_PROXY`/`HTTPS_PROXY` 时，把 `qyapi.weixin.qq.com` 写进 `NO_PROXY`。
 
 ### 日志与排障
 
@@ -143,21 +103,70 @@ lsof -nP -iTCP:8081 -sTCP:LISTEN                 # 端口占用
 - 健康检查一直失败 → 先看 `.err.log`；A 股收盘等脚本源首次运行可能较慢
 - 仓库搬家后服务起不来 → plist 里是旧绝对路径，重新 `make install-mac`
 
-### 源健康（Mac / VPS 通用）
+### 源健康（各实例通用）
 
 `GET /api/sources/health` 返回逐源状态；`/api/health` 里带 `sources` 汇总计数。
 间隔 ≤5 分钟的源连续 6 次抓取 0 条会降级（`source_health.empty_degraded_threshold`），
 用于发现上游停更、RSS 换地址或源内过滤过严——这些情况 Fetch 不会报错。
 降级只写状态和日志；`notify_channels` 为空时不推送。
 
-### 离线备份
+## 通用部署方案（Linux / VPS）
 
-`deploy/mac-backup.sh` 通过 ssh 让 VPS 现场生成快照再取回，保留 7 份。
-建议加入本机 crontab：
+仓库不绑定任何具体主机、IP 或部署目录。迁移到任意 Linux 主机时按下面步骤自建，
+把 `<DEPLOY_DIR>`、`<USER>`、`<HOST>` 替换成自己的值。
 
-```cron
-30 3 * * * /path/to/repo/deploy/mac-backup.sh >> ~/Library/Logs/news-backup.log 2>&1
+### 1. 准备
+
+- Go 1.26+、Python 3.12、git；私有仓认证自备（deploy key 或个人令牌）
+- 目录建议：源码仓 `<DEPLOY_DIR>/src/nimbus-news`，二进制 `<DEPLOY_DIR>/bin/platform`
+- 部署 key 用只读权限；不要把 `.env` 或真实配置提交进仓库
+
+### 2. 配置
+
+```bash
+make init                                    # 生成 config.platform.yaml / .env（已存在则跳过）
+make python-deps                             # 建 .venv 装 scripts/requirements.txt
+$EDITOR .env                                 # 填密钥；NIMBUS_RUNTIME_ROLE 决定本机角色
+make config-diff CONFIG=config.platform.yaml # 模板变更后逐项合并
 ```
+
+真实配置与 `.env` 不入库。模板变更**不会**自动进真实配置，每次拉取后手动合并。
+
+### 3. 构建
+
+```bash
+make build-native        # 产出 bin/platform
+```
+
+### 4. 守护进程
+
+用 systemd 托管（`Type=simple`），要点：
+
+- `WorkingDirectory=<DEPLOY_DIR>`，`ExecStart=<DEPLOY_DIR>/bin/platform -config <DEPLOY_DIR>/config.platform.yaml`
+- 由进程环境或启动包装脚本 `source .env`，固定 `TZ=Asia/Shanghai`
+- `Restart=always`；stdout/stderr 落到 `<DEPLOY_DIR>/logs/`
+- PATH 前置 `<DEPLOY_DIR>/.venv/bin`，让脚本源 subprocess 用带依赖的 python
+
+**先确认角色**：本机设 `NIMBUS_RUNTIME_ROLE=active` 前，先把原 active 实例改为 `standby`，
+否则双活重复推送。
+
+### 5. 更新与验证
+
+```bash
+git pull && make build-native && <重启守护进程>
+curl -s 127.0.0.1:8081/api/health/live     # 存活（进程级）
+curl -s 127.0.0.1:8081/api/health | jq .sources  # 就绪（digest 积压会 503，别拿它判版本好坏）
+curl -s 127.0.0.1:8081/api/sources/health
+```
+
+自动部署（可选）：在主机上放一个定时任务，`git fetch` 对比已部署 commit，
+有更新才构建 → 原子替换二进制 → 重启 → 轮询 `/api/health/live`，失败回滚上一个二进制。
+`config.platform.yaml` 与 `.env` 不随代码自动更新，需人工合并。
+
+### 6. 备份
+
+`POST /api/store/snapshot`（带 `NIMBUS_ADMIN_TOKEN`）生成进程内一致性快照，
+运行中不要直接拷 `data/platform.db`（可能拿到撕裂副本）。定期归档、保留 N 份即可。
 
 ## 配置变更流程（模板入库，实例配置不入库）
 
@@ -165,14 +174,13 @@ lsof -nP -iTCP:8081 -sTCP:LISTEN                 # 端口占用
 
 | 实例 | 配置文件 | 维护方式 |
 |---|---|---|
-| Mac | `config.platform.yaml` | `make init` 从模板生成；密钥写 `.env` |
-| VPS | `config.platform.vps.yaml` | 本地/远端维护，`sync-vps.sh` 推送；密钥在 `/opt/news/.env` |
+| 任意实例 | `config.platform.yaml` | `make init` 从模板生成；密钥写 `.env` |
 
 模板改了**不会**自动进真实配置。每次拉取模板变更后：
 
 ```bash
 git pull
-make config-diff CONFIG=config.platform.yaml   # VPS 配置同理
+make config-diff CONFIG=config.platform.yaml
 ```
 
 `make config-diff` 逐项列出“模板有、真实配置缺失或不同”的键，密钥字段
@@ -182,81 +190,22 @@ make config-diff CONFIG=config.platform.yaml   # VPS 配置同理
 - 本地刻意不同的项（`force`、额外源、渠道开关、连接串）：保留
 - 合并后校验 YAML，再重启对应实例
 
-Mac 重启：
-
-```bash
-make mac-restart
-```
-
-VPS 更新配置（本地有真源时）：
-
-```bash
-scp config.platform.vps.yaml root@45.77.26.44:/opt/news/config.platform.vps.yaml
-ssh root@45.77.26.44 'systemctl restart news-platform'
-```
-
-新机器/换机后本地可能没有这份真源；先从 VPS 取回再改，否则
-`sync-vps.sh` 会因缺文件直接失败：
-
-```bash
-scp root@45.77.26.44:/opt/news/config.platform.vps.yaml .
-make config-diff CONFIG=config.platform.vps.yaml
-```
-
-或走完整同步（会重装 cron、可选重启）：
-
-```bash
-./deploy/sync-vps.sh                # 同步 config + .env + cron + 重启
-./deploy/sync-vps.sh --skip-restart # 只同步不重启
-```
-
-重启后验证：
-
-```bash
-curl -s 127.0.0.1:8081/api/health | jq .sources
-curl -s 127.0.0.1:8081/api/sources/health
-```
-
 > **严禁提交** config/*.yaml 与 .env。`make config-diff` 只在本地跑，不要把输出贴到公开渠道。
-
-## VPS 运维 cron
-
-| 任务 | 触发 | 内容 |
-|---|---|---|
-| 自动构建部署 | 每 5 分钟 | `vps-build-deploy.sh`：新 commit → 构建 → 替换 → 重启 → 健康检查（失败回滚） |
-| 数据备份 | 每日 03:15 | `POST /api/store/snapshot`（进程内一致性快照），保留 7 天自动删除 |
-| 外部探活 | 每 5 分钟 | `health-probe.sh`：curl `/api/health/live`，**连续 3 次**失败 → 企业微信 webhook 告警（独立于平台进程） |
-
-手动操作：
-
-```bash
-ssh root@45.77.26.44
-systemctl status news-platform           # 状态
-tail -f /opt/news/logs/platform.out.log  # 平台日志
-tail -f /opt/news/logs/build-deploy.log  # 构建部署日志
-journalctl -u news-platform -e           # systemd 侧日志
-crontab -l                               # 三条 cron（构建/备份/探活）
-```
 
 ## 配置
 
-- VPS 运行配置：`config.platform.vps.yaml`；Mac 运行配置：`config.platform.yaml`
-  （渠道、源调度、脚本源参数；两者都 gitignored，缺失时 `make init` 从模板生成）
-- 密钥在 `.env`，`launch-vps.sh` / `launch-mac.sh` 启动时 source 进环境；
-  脚本源 subprocess 同样继承
+- 运行配置：`config.platform.yaml`（渠道、源调度、脚本源参数；gitignored）
+- 密钥在 `.env`，启动时 source 进环境；脚本源 subprocess 同样继承
 - 结构真源：`config.platform.yaml.example`（渠道用 `${VAR}` 引用 `.env`）
 - source-dump 用配置：`make dump-config` 从模板生成 `config.dump.yaml`
-- 模板变更同步：`make config-diff CONFIG=<真实配置>`，见上文
 - 常用密钥：`WECHAT_WEBHOOK`、`DISCORD_PUSH_WEBHOOK`、`FRED_API_KEY`（宏观报告）、
-  `GLM_API_KEY`（翻译/简评）、`NIMBUS_ADMIN_TOKEN`（管理 API）、
-  `LONGPORT_APP_KEY` / `LONGPORT_APP_SECRET` / `LONGPORT_ACCESS_TOKEN`（港股/A股行情）
+  `GLM_API_KEY`（翻译/简评）、`NIMBUS_ADMIN_TOKEN`（管理 API）
 
 数据源全览见 nimbus-os 仓 `docs/references/news-sources.md`（news 仓源码为准，文档随源变更在 nimbus-os 更新）。
 
 ## 本地开发
 
 ```bash
-cd ~/work/nimbus-news
 make init                 # 生成 config.platform.yaml / .env（已存在则跳过）
 make python-deps          # 建 venv 并安装 scripts 依赖（akshare/ecocal 等，见 scripts/requirements.txt）
 make build-native         # 本地 go build ./cmd/platform
@@ -271,18 +220,7 @@ make config-diff CONFIG=config.platform.yaml        # 看模板与本地配置�
 ## 数据与生成物（不提交）
 
 - `data/*.db`（BoltDB 平台库、market.db）
-- `bin/`、`venv/`、`logs/`、`backups/`、`scripts/__pycache__/`
-
-备份/恢复：
-
-```bash
-# VPS 上
-ls /opt/news/backups/                        # 每日 03:15 的 platform.*.db.tgz
-# 恢复：停服务 → 解压覆盖 data/platform.db → 启动
-systemctl stop news-platform
-tar xzf backups/platform.20260816.db.tgz -C /opt/news   # 恢复备份当天数据
-systemctl start news-platform
-```
+- `bin/`、`.venv/`、`logs/`、`backups/`、`scripts/__pycache__/`
 
 ## Digest topics v4 显式迁移
 
@@ -295,12 +233,12 @@ systemctl start news-platform
 cp data/platform.db data/platform.topics-v4.rehearsal.db
 go run ./cmd/digest-migrate \
   --db data/platform.topics-v4.rehearsal.db \
-  --config config.platform.vps.yaml > /tmp/topics-v4-dry-run.json
+  --config config.platform.yaml > /tmp/topics-v4-dry-run.json
 
 BEFORE_HASH=$(jq -r .before_hash /tmp/topics-v4-dry-run.json)
 go run ./cmd/digest-migrate \
   --db data/platform.topics-v4.rehearsal.db \
-  --config config.platform.vps.yaml \
+  --config config.platform.yaml \
   --mode apply \
   --expected-before-hash "$BEFORE_HASH"
 ```
@@ -313,10 +251,10 @@ go run ./cmd/digest-migrate \
 
 ```bash
 cp data/platform.db data/platform.pre-topics-v4.db
-go run ./cmd/digest-migrate --db data/platform.db --config config.platform.vps.yaml \
+go run ./cmd/digest-migrate --db data/platform.db --config config.platform.yaml \
   > /tmp/topics-v4-production-dry-run.json
 BEFORE_HASH=$(jq -r .before_hash /tmp/topics-v4-production-dry-run.json)
-go run ./cmd/digest-migrate --db data/platform.db --config config.platform.vps.yaml \
+go run ./cmd/digest-migrate --db data/platform.db --config config.platform.yaml \
   --mode apply --expected-before-hash "$BEFORE_HASH"
 ```
 

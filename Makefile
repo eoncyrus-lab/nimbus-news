@@ -4,12 +4,11 @@
 #   make help         查看所有命令
 #   make build-native 构建 ./bin/platform
 #   make install-mac  构建并注册 launchd（本机）
-#   make deploy-vps   同步配置并安装 VPS cron（本地运行）
 # ============================================
 
-.PHONY: help init build-native run test vet deploy-vps install-mac uninstall-mac \
+.PHONY: help init build-native run test vet install-mac uninstall-mac \
         mac-bootstrap mac-restart mac-status mac-logs dump-config config-diff \
-        backup restore python-deps dev-backend dev-frontend health smoke-longbridge
+        backup restore python-deps dev-backend dev-frontend health
 
 .DEFAULT_GOAL := help
 
@@ -21,7 +20,8 @@ NC     := \033[0m
 
 CONFIG ?= config.platform.yaml
 ENV_FILE ?= .env
-PYTHON ?= python3
+# 固定 3.12：3.14 上 akshare 等包无预编译 wheel，且不绑定系统 python3 的浮动版本
+PYTHON ?= python3.12
 API_URL ?= http://127.0.0.1:8081
 MAC_LABEL := com.news.platform
 ADMIN_AUTH := $(if $(NIMBUS_ADMIN_TOKEN),-H "Authorization: Bearer $(NIMBUS_ADMIN_TOKEN)")
@@ -48,7 +48,6 @@ help:
 	@echo "  make mac-status     - launchd 状态 + 存活/就绪探针"
 	@echo "  make mac-logs       - tail 本机平台日志"
 	@echo "  make uninstall-mac  - 卸载 launchd agent"
-	@echo "  make deploy-vps     - 同步配置 + 安装 VPS cron（本地运行）"
 	@echo ""
 	@echo "$(GREEN)运维:$(NC)"
 	@echo "  make health         - 检查 /api/health/live 与就绪状态"
@@ -113,9 +112,6 @@ mac-logs:
 uninstall-mac:
 	./deploy/install-launchd.sh --uninstall
 
-deploy-vps:
-	./deploy/sync-vps.sh $(ARGS)
-
 health:
 	@echo "存活:"
 	@curl -sf -m 5 $(API_URL)/api/health/live || echo " $(RED)✗ 进程无响应$(NC)"
@@ -145,6 +141,3 @@ dev-backend:
 
 dev-frontend:
 	@cd web && npm run dev
-
-smoke-longbridge:
-	@bash scripts/longbridge_smoke.sh

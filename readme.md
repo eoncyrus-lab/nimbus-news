@@ -29,7 +29,7 @@ docs/                      # 部署、架构与维护文档
 
 - `config.platform.yaml.example`: 当前 15 源/2 渠道拓扑的无密钥模板
 - `config.platform.yaml`: 本地运行配置，已加入 `.gitignore`（`make init` 从模板生成）
-- `config.platform.vps.yaml`: VPS 运行配置（含密钥，维护者本地持有），已加入 `.gitignore`
+- `config.platform.yaml`: 本机运行配置（含 `${VAR}` 引用），已加入 `.gitignore`
 - `config.dump.yaml`: source-dump 用配置，`make dump-config` 从模板生成，已加入 `.gitignore`
 - `.env.example`: 可提交的环境变量模板
 - `.env`: 本地/生产密钥，已加入 `.gitignore`
@@ -50,8 +50,7 @@ webhook、token 或 API key 写成明文。服务启动时会展开这些引用�
 make config-diff CONFIG=config.platform.yaml
 ```
 
-密钥字段自动跳过；合并后重启对应实例（Mac `make mac-restart`，VPS
-`systemctl restart news-platform`）。
+密钥字段自动跳过；合并后重启对应实例（Mac `make mac-restart`，Linux 主机重启自己的守护进程）。
 
 未配置 `routing` 的源继续使用 legacy `delivery_mode` / `briefing_target`；新配置应优先使用
 typed `routing`，不要在同一个源上混用两套字段。
@@ -87,16 +86,9 @@ make dev-frontend         # Vue 管理后台（localhost:3000）
 
 ## 部署
 
-两条路径，都是原生二进制 + 本机守护：
+原生二进制 + 本机守护；同一时刻只能有一个 `active` 实例。
 
-**VPS（systemd，active）**
-
-```bash
-git push origin main      # VPS cron 每 5 分钟自构建；构建/重启/存活检查失败自动回滚
-./deploy/sync-vps.sh      # 同步 config.platform.vps.yaml + 安装运维 cron
-```
-
-**Mac（launchd，standby）**
+**Mac（launchd，active 长期推送）**
 
 ```bash
 make mac-bootstrap        # 首次：生成 config/.env + 装 Python 依赖 + 构建 + 注册 launchd
@@ -107,11 +99,13 @@ make mac-logs             # tail 本机日志
 make uninstall-mac
 ```
 
-Mac 默认以 `standby` 运行（`launch-mac.sh` 在 `.env` 未指定角色时注入），
-不摄入、不推送，只提供只读 API；要改成 `admin`/`active` 写进 `.env` 后 `make mac-restart`。
-首次部署、日志路径和排障见 [部署说明](docs/deployment.md#maclaunchdstandby)。
+Mac 默认以 `active` 运行（`launch-mac.sh` 在 `.env` 未指定角色时注入），
+负责摄入与推送；要退回只读 `standby`/`admin` 写进 `.env` 后 `make mac-restart`。
 
-部署脚本的健康回滚只检查 `/api/health/live`（进程级）。`/api/health` 是就绪探针，
+其他 Linux 主机：见 [通用部署方案](docs/deployment.md#通用部署方案linux--vps)
+（systemd + 构建 + 配置合并，不绑定具体主机）。
+
+探活只检查 `/api/health/live`（进程级）。`/api/health` 是就绪探针，
 digest 积压时会返回 503，不能用来判定版本好坏。
 
 ## Python 脚本依赖

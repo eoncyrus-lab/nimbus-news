@@ -23,6 +23,9 @@
 
 ## 1. 运行形态：VPS + Mac
 
+> 本节记录 2026-11-09 当时的部署形态，属历史决策依据。具体脚本与主机绑定已清理，
+> **现行部署以 [部署说明](deployment.md) 为准**（Mac active + 通用 Linux/VPS 方案）。
+
 ### 1.1 事实
 
 - `deploy/news-platform.service`、`deploy/launch-vps.sh`、`deploy/vps-build-deploy.sh` 构成 VPS systemd + 每 5 分钟 push 部署的现网路径。

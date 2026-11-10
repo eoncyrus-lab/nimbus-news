@@ -44,13 +44,6 @@ channels:
 sources:
   # ── 实时 ──
 
-  # bwenews-live 已移除（2026-07-18）：公共 WS 端口已死（11.5 天仅 3 条，683 次重连失败刷日志），
-  # BWE 内容由 bwenews-rss 覆盖。
-
-  # trump-rss 已移除（2026-11-04）：实测 50 条里政策词命中仅 4%，84% 为 FoxNews/民调/
-  # 口水类政治评论；真正的关税/行政命令信号由 bloomberg-politics 与快讯源更快覆盖。
-  # 需要原话时再从 trump.fm 手动查，不再占实时源位。
-
   # 2026-07-18 修复：feed 无 <guid> 导致全部条目同 ID 被去重误杀，ID 改为 GUID→Link 回退。
   - name: "bwe-tradfi"
     type: "rss"
@@ -109,28 +102,6 @@ sources:
       max_age_hours: 12
       send_images: true
       tags: ["宏观", "市场", "分析"]
-
-  # walter-bloomberg 已删除（2026-11-09）：与 bwe-tradfi 同属一条快讯线，跨源重复高，
-  # 价值投资口径下删源比调参更省事；关税/地缘由 bwe + bloomberg-markets 覆盖。
-
-  # first-squawk 已移除（2026-11-04）：与 walter-bloomberg 同属一条快讯线，实测头部条目
-  # 完全相同（同一伊朗无人机/WTI 标题），保留 walter 一个即可；跨源重复由去重组兜底。
-
-  # MMS News 已移除（2026-06）：ch2rss 代理冻结，最新条目停在 5/27，线上 0 条 / 213 轮，
-  # 被 HealthMonitor 反复标记 unhealthy；且为山寨/meme 加密噪音，与 bwenews-live 仅留 BTC/HYPE 的策略相悖。
-
-  # finnhub-market 已移除（2026-07-18）：用户决定彻底废弃 finnhub 源。
-  # bwenews-rss 已移除（2026-07-18）：rss-public.bwe-ws.com 上游持续滞后（~38h），每日 5 条且多为
-  # 保留 bwe-tradfi（ch2rss）作为 BWE 系出活的唯一通道。
-
-  # - name: "tree-of-alpha"
-  #   type: "tree-of-alpha"
-  #   interval: 180
-  #   sinks: ["wechat-main", "discord-webhook"]
-  #   options:
-  #     max_age_hours: 6
-  #     max_per_fetch: 10
-  #     exclude_crypto: true
 
   # Fed 官方新闻 —— 直连官方 RSS 已恢复可用（TLS 问题已消失，2026-07-18 verified）；
   # 此前切到 Google News 限定 federalreserve.gov 检索，实测混入研究论文/OIG 审计等噪音，故切回官方源。
@@ -222,9 +193,6 @@ sources:
         - "/newsletters/"
         - "/podcasts/"
       tags: ["宏观", "经济", "Bloomberg"]
-
-  # bloomberg-politics 已删除（2026-11-09）：32 条/日以政治口水为主，关税/制裁已被
-  # bwe-tradfi 与 bloomberg-markets 覆盖；宏观大事口径下不再保留纯政治源。
 
   # ForexLive（investingLive 前身）突发快讯 —— 投行级宏观快讯：经济数据 vs 预期、地缘事件
   - name: "forexlive-breaking"
@@ -355,17 +323,6 @@ sources:
         - "早间要闻汇总"
         - "华尔街见闻早餐"
       tags: ["中国", "港股", "宏观"]
-
-  # eia-energy 已删除（2026-11-09）：Today in Energy 是博客不是事件，0.4 条/日且与
-  # 油价交易无关；周度库存数据需要时另做独立源，不混在新闻快讯里。
-
-  # Energy Connects —— 已删除 (2026-08-02)：内容被其他源覆盖(能源地缘由
-  # forexlive/bwe 承担),长期 enabled: false 死配置,代码一并清理。
-  # Hellenic Shipping News —— 已关闭 (2026-07-31)
-  # 理由: 48h 抓取 3,184 条，AI 拦截率 1.6%，80% 为航运业合规/安全/船舶回收等非交易噪音。
-
-  # WSJ Markets 已移除（2026-06）：feeds.a.dj.com 公共 RSS 停更，feed 冻结在 2025-01-27，
-  # Serenity 占位 stub 一并移除：从未配置 SERENITY_RSS_URL，长期 enabled: false 死配置。
 
   # ── 定时快照 ──
 
@@ -562,12 +519,6 @@ sources:
             window_hours: 168
             limit: 20
             min_score: 40
-
-  # 财报日历已删除（2026-11-09）：价值投资口径下财报不进 news 推送。
-
-  # 机构 13F 追踪 —— 已关闭 (2026-07-31): 非季末无产出(EDGAR 仅季度披露)
-  # 超级投资者 13F 追踪 —— 已关闭 (2026-07-31): 28s 跑出 0 字节(非季末无新披露)
-  # global-macro 已移除(2026-07-18): 内容合并至收盘简报
 
 # ── 事件模型（Story/Thread/Decision）────────────────────────────────────────
 # off    = 关闭（零开销）

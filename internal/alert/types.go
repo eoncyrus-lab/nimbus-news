@@ -1,10 +1,6 @@
 package alert
 
-import (
-	"crypto/rand"
-	"encoding/hex"
-	"time"
-)
+import "time"
 
 // AlertType 告警类型
 type AlertType string
@@ -70,18 +66,6 @@ type AlertEvent struct {
 	CurrentValue float64   `json:"current_value"` // 当前值（价格/涨跌幅）
 	TargetValue  float64   `json:"target_value"`  // 目标值
 	Message      string    `json:"message"`       // 格式化的消息
-}
-
-// AlertNotifier 告警通知接口
-type AlertNotifier interface {
-	Notify(userID string, event *AlertEvent) error
-}
-
-// generateAlertID 生成告警ID
-func generateAlertID() string {
-	bytes := make([]byte, 8)
-	rand.Read(bytes)
-	return hex.EncodeToString(bytes)
 }
 
 // ConditionText 条件文本

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -505,13 +504,4 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
-}
-
-// 确保 storage 文件目录存在
-func ensureDir(path string) error {
-	dir := path[:strings.LastIndex(path, "/")]
-	if dir == "" {
-		return nil
-	}
-	return os.MkdirAll(dir, 0755)
 }

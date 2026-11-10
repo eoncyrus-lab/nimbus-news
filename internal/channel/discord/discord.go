@@ -142,7 +142,7 @@ func (d *DiscordChannel) Start(ctx context.Context) error {
 		d.threadPool = NewThreadPool(d.session, d.channelID, d.threadTTL)
 		d.threadPool.SetMappings(d.threadMappings)
 		d.threadDedup = NewThreadDedup(60*time.Minute, 0.7)
-		d.ratelimiter = NewDiscordRatelimiter(3, 5, 2) // 3 thread/15min, 5 msg/s, burst 2
+		d.ratelimiter = NewDiscordRatelimiter(3, 5, 2) // 5 msg/s, burst 2（首参保留兼容，未使用）
 		slog.Info("Discord: Thread Pool enabled with", "len_d_threadmappings", len(d.threadMappings))
 	}
 

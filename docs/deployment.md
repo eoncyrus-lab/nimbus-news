@@ -5,7 +5,9 @@
 - **代码仓**：本地 `~/work/nimbus-news`（唯一 git 仓库，两仓制：nimbus-os 持 datasources/guanfu 模块，经 go.mod replace 引用）
 - **运行机**：VPS（`root@45.77.26.44`），部署目录 `/opt/news`
 - **服务**：systemd `news-platform.service`（`Type=simple`，ExecStart=`deploy/launch-vps.sh`，TZ=Asia/Shanghai）
-- **角色**：VPS 为 `active`；Mac 为 `standby`（同配置，`NIMBUS_RUNTIME_ROLE` 或 `runtime.role` 注入）
+- **角色**：Mac 为 `active`（长期推送，默认由 `launch-mac.sh` 注入 `NIMBUS_RUNTIME_ROLE=active`）；
+  `.env` 可覆盖为 `standby`/`admin`。同一时刻只能有一个 `active` 实例，
+  启用另一实例前先把本机的角色退回收只读，否则会重复推送。
 - **进程**：`./bin/platform -config config.platform.vps.yaml`，API 仅监听 127.0.0.1:8081
 
 VPS 关键目录：
@@ -46,11 +48,12 @@ deploy key（nimbus-news / nimbus-os 各一），经 `~/.ssh/config` 的
 **代码自动部署，配置不会。** `config.platform.vps.yaml` 与 `.env` 不在 git 里，
 模板变更需要按下一节手动合并。
 
-## Mac（launchd，standby）
+## Mac（launchd，active 长期推送）
 
-Mac 是常驻**只读实例**：不摄入、不投递、不生成简报，只提供 `/api/health` 与只读 API，
-用于本机调试，以及 VPS 故障时临时 `promote` 接管。配置与 VPS 分开：
+Mac 是常驻的**推送实例**：负责摄入、投递与生成简报。配置与 VPS 分开：
 Mac 用 `config.platform.yaml`，VPS 用 `config.platform.vps.yaml`。
+`standby`/`admin` 只用于临时把本机退回收只读（例如另一实例接管时），
+通过 `.env` 的 `NIMBUS_RUNTIME_ROLE` 覆盖。
 
 ### 前置
 
@@ -64,7 +67,7 @@ Mac 用 `config.platform.yaml`，VPS 用 `config.platform.vps.yaml`。
 ```bash
 cd ~/work/nimbus-news
 make mac-bootstrap          # 生成 config/.env → 建 .venv 装依赖 → 构建 → 注册 launchd
-$EDITOR .env                # 填 webhook/API key；角色默认 standby，通常不用改
+$EDITOR .env                # 填 webhook/API key；角色默认 active（长期推送）
 make mac-status             # 看 launchd 状态 + /api/health/live + /api/health
 ```
 
@@ -102,12 +105,25 @@ make mac-restart
 
 ### 角色与配置
 
-- `deploy/launch-mac.sh` 在 `.env` 未设置 `NIMBUS_RUNTIME_ROLE` 时注入 `standby`，
-  避免 Mac 与 VPS 双活；要改 `admin`/`active` 就写进 `.env` 后 `make mac-restart`。
+- `deploy/launch-mac.sh` 在 `.env` 未设置 `NIMBUS_RUNTIME_ROLE` 时注入 `active`
+  （长期推送）。要退回只读，在 `.env` 写 `standby`/`admin` 后 `make mac-restart`。
+- 同一时刻只能有一个 `active` 实例；启用另一实例前先确认本机角色，避免双活重复推送。
 - 临时接管：`curl -X POST 127.0.0.1:8081/api/runtime/promote`
   （配置了 `NIMBUS_ADMIN_TOKEN` 时带 `Authorization: Bearer <token>`）；
   重启后回到 `.env` 里的角色。
 - `NIMBUS_CONFIG` 可覆盖启动配置文件名，默认 `config.platform.yaml`。
+
+### AI 过滤与推送
+
+**未配置 AI 不得影响推送。** `config.platform.yaml.example` 里
+`filters.ai_filter.enabled` 默认 `false`，各源 `routing.ai_policy` 统一为 `bypass`；
+`ai_policy: required` 的源在 AI 关闭时也按默认路由走，不会静默丢弃。
+代码侧保障：LLM 未配置时不挂 AI 过滤器；`enabled=false` 时 `ShouldFilter` 直接放行、
+`EvaluateTyped` 返回 `disabled`（不拦截）；LLM 报错、限流、解析失败一律 fail-open。
+日志会明确打印「not gated by AI」，不会误报成开启拦截。
+
+确需启用 AI 门禁时：先确认 LLM 可用，把 `enabled` 改为 `true` 并将对应源改为
+`ai_policy: required`，再观察 `ai_filter blocked` 日志量后决定是否上线。
 
 ### 日志与排障
 

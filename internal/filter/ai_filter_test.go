@@ -164,9 +164,25 @@ func TestParseStrictEvalResponse(t *testing.T) {
 	}
 }
 
+// AI 门禁关闭时不得调用 LLM，也不得拦截消息：未配 AI 不能影响推送。
+func TestAIFilterEvaluateTypedDisabledNeverBlocks(t *testing.T) {
+	provider := &fakeProvider{resp: "1|无价值|无交易价值"}
+	f := NewAIFilter(provider, AIFilterConfig{Enabled: false, BlockCategories: []string{"无价值"}})
+	got := f.EvaluateTyped(context.Background(), "source-a", newTestMsg("disabled"))
+	if got.Status != EvalDisabled || got.Blocked {
+		t.Fatalf("disabled result=%+v", got)
+	}
+	if provider.callCount() != 0 {
+		t.Fatalf("disabled gate called LLM %d times", provider.callCount())
+	}
+	if f.ShouldFilter("source-a", "wechat-main", newTestMsg("disabled")) {
+		t.Fatal("disabled gate blocked legacy delivery")
+	}
+}
+
 func TestAIFilterEvaluateTypedStatuses(t *testing.T) {
 	provider := &fakeProvider{err: errors.New("offline")}
-	f := NewAIFilter(provider, AIFilterConfig{MaxPerMinute: 1})
+	f := NewAIFilter(provider, AIFilterConfig{Enabled: true, MaxPerMinute: 1})
 	if got := f.EvaluateTyped(context.Background(), "source-a", newTestMsg("provider")); got.Status != EvalProviderError {
 		t.Fatalf("provider status=%q", got.Status)
 	}
@@ -181,7 +197,7 @@ func TestAIFilterEvaluateTypedStatuses(t *testing.T) {
 
 func TestAIFilterEvaluateTypedCachesPerSourceAndLimitsFairly(t *testing.T) {
 	provider := &fakeProvider{resp: "8|重要|影响市场"}
-	f := NewAIFilter(provider, AIFilterConfig{MaxPerMinute: 1, GlobalMaxPerMinute: 3})
+	f := NewAIFilter(provider, AIFilterConfig{Enabled: true, MaxPerMinute: 1, GlobalMaxPerMinute: 3})
 	item := &model.Message{ID: "stable-rss-guid", Title: "same", Content: "same"}
 	if got := f.EvaluateTyped(context.Background(), "source-a", item); got.Status != EvalSuccess {
 		t.Fatalf("first status=%q", got.Status)
@@ -215,7 +231,7 @@ func TestAIFilterEvaluateTypedCachesPerSourceAndLimitsFairly(t *testing.T) {
 func TestAIFilterEvaluateTypedBlocksCategoriesAndCachesOnlySuccess(t *testing.T) {
 	blockedProvider := &fakeProvider{resp: "10|无价值|无交易价值"}
 	blockedFilter := NewAIFilter(blockedProvider, AIFilterConfig{
-		MaxPerMinute: 10, GlobalMaxPerMinute: 10, BlockCategories: []string{"无价值", "无关"},
+		Enabled: true, MaxPerMinute: 10, GlobalMaxPerMinute: 10, BlockCategories: []string{"无价值", "无关"},
 	})
 	message := &model.Message{ID: "blocked"}
 	for i := 0; i < 2; i++ {
@@ -236,7 +252,7 @@ func TestAIFilterEvaluateTypedBlocksCategoriesAndCachesOnlySuccess(t *testing.T)
 		{name: "parse", provider: &fakeProvider{resp: "not-a-score"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			filter := NewAIFilter(test.provider, AIFilterConfig{MaxPerMinute: 10, GlobalMaxPerMinute: 10})
+			filter := NewAIFilter(test.provider, AIFilterConfig{Enabled: true, MaxPerMinute: 10, GlobalMaxPerMinute: 10})
 			for i := 0; i < 2; i++ {
 				if got := filter.EvaluateTyped(context.Background(), "source", &model.Message{ID: "same"}); got.Status == EvalSuccess {
 					t.Fatalf("unexpected success: %+v", got)
@@ -251,7 +267,7 @@ func TestAIFilterEvaluateTypedBlocksCategoriesAndCachesOnlySuccess(t *testing.T)
 
 func TestAIFilterEvaluateTypedGlobalBudgetIsAtomic(t *testing.T) {
 	provider := &fakeProvider{resp: "8|重要|影响市场"}
-	filter := NewAIFilter(provider, AIFilterConfig{MaxPerMinute: 10, GlobalMaxPerMinute: 5})
+	filter := NewAIFilter(provider, AIFilterConfig{Enabled: true, MaxPerMinute: 10, GlobalMaxPerMinute: 5})
 	var wg sync.WaitGroup
 	for i := 0; i < 20; i++ {
 		wg.Add(1)

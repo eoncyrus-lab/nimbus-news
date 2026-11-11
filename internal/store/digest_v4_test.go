@@ -234,6 +234,9 @@ func TestDirectChannelBackoffAndPermanentFailureAudit(t *testing.T) {
 		if err != nil || claim == nil {
 			t.Fatalf("claim %s=%+v err=%v", tc.id, claim, err)
 		}
+		if claim.Attempts != 0 {
+			t.Fatalf("first attempt claim %s Attempts=%d, want 0", tc.id, claim.Attempts)
+		}
 		permanent := tc.id == "removed"
 		if err := ds.FailDirectChannel(context.Background(), "rss", tc.id, claim.Token, tc.channel, "test failure", permanent); err != nil {
 			t.Fatal(err)
@@ -246,8 +249,13 @@ func TestDirectChannelBackoffAndPermanentFailureAudit(t *testing.T) {
 		t.Fatalf("deferred claim=%+v err=%v", claims, err)
 	}
 	now = now.Add(31 * time.Second)
-	if claims, err := ds.ClaimPendingDirect(context.Background(), 10, time.Minute); err != nil || len(claims) != 1 || claims[0].MessageID != "retry" {
+	claims, err := ds.ClaimPendingDirect(context.Background(), 10, time.Minute)
+	if err != nil || len(claims) != 1 || claims[0].MessageID != "retry" {
 		t.Fatalf("due claim=%+v err=%v", claims, err)
+	}
+	// 补发的 claim 必须带已失败次数，供补发结果日志区分首投/重试。
+	if got := claims[0].Attempts; got != 1 {
+		t.Fatalf("recovered claim Attempts=%d, want 1", got)
 	}
 	state, err := ds.LookupDirect(context.Background(), digest.RouteRequest{Source: "rss", MessageID: "removed"})
 	if err != nil || !state.Completed {

@@ -178,7 +178,13 @@ func (s *DigestStore) claimDirectRecord(bucket *bolt.Bucket, key []byte, lease t
 	if err != nil {
 		return nil, err
 	}
-	return &digest.DirectClaim{Source: record.Source, MessageID: record.MessageID, Token: token, Message: message, Channels: channels}, nil
+	maxAttempts := 0
+	for _, channel := range channels {
+		if a := record.Failures[channel].Attempts; a > maxAttempts {
+			maxAttempts = a
+		}
+	}
+	return &digest.DirectClaim{Source: record.Source, MessageID: record.MessageID, Token: token, Message: message, Channels: channels, Attempts: maxAttempts}, nil
 }
 
 func (s *DigestStore) FailDirectChannel(ctx context.Context, source, messageID, token, channel, reason string, permanent bool) error {

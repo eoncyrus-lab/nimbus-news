@@ -112,6 +112,9 @@ type DirectClaim struct {
 	Token     string
 	Message   *model.Message
 	Channels  []string
+	// Attempts 是该 claim 里各渠道已失败次数的最大值：0 表示首投，>0 表示
+	// 经 FailDirectChannel 退避后的补发。仅用于可观测日志，不改投递语义。
+	Attempts int
 }
 
 type RouteAdmission struct {

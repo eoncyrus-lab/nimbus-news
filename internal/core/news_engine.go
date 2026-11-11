@@ -404,6 +404,14 @@ func (e *NewsEngine) Start(ctx context.Context) {
 	e.sourceDones = make(map[string]chan struct{})
 
 	slog.Info("newsengine starting", "role", e.runtimeRole())
+	if role := e.runtimeRole(); role != config.RoleActive {
+		// standby/admin 只读：不摄入、不投递、不生成简报。进程仍在 running，
+		// launchd 与健康探针都看不出异常——曾因启动脚本注入 standby 静默一整天
+		// 零推送。显式告警，避免「启动了但没推送」再次无声发生。
+		slog.Warn("news engine is NOT active: ingestion and delivery are disabled",
+			"role", role,
+			"hint", "需要本机推送时设 NIMBUS_RUNTIME_ROLE=active 或 runtime.role: active 并重启；同一时刻只能有一个 active 实例")
+	}
 
 	// 设置补推队列的分发函数
 	e.retryQueue.SetDispatcher(func(ctx context.Context, msg *model.Message, sinks []string) error {
@@ -510,7 +518,18 @@ func (e *NewsEngine) recoverPendingDirect() {
 		if len(claims) == 0 {
 			return
 		}
-		e.runDirectClaim(e.ctx, routedStore, claims[0])
+		claim := claims[0]
+		ok := e.runDirectClaim(e.ctx, routedStore, claim)
+		// 成功发送本身不打日志（渠道只在失败时 Warn），补发尤其需要一行可自证
+		// 记录：否则「投递失败后到底补发没有」只能靠翻 Bolt 状态。
+		if claim.Attempts > 0 {
+			slog.Info("direct claim recovery result",
+				"source", claim.Source,
+				"message_id", claim.MessageID,
+				"channels", claim.Channels,
+				"attempt", claim.Attempts,
+				"delivered", ok)
+		}
 	}
 }
 
@@ -700,6 +719,24 @@ func (e *NewsEngine) runScheduleCatchUpGeneration(src source.Source, info newsSo
 		return
 	}
 
+	// 补推只回放「今天已过去的最近一个」时间槽（见 mostRecentPastSlot），更早的
+	// 时段不会单独重跑：定时源抓的是 time.Now() 的当前快照，回放历史 slot 会
+	// 生成贴着旧标签的当前数据。这里把被放弃的 slot 显式列出来，让「漏推了哪些」
+	// 在日志里可查，而不是无声消失。仅在确实要补跑时打，避免每次重启都误报。
+	if past := pastSlotsAt(info.schedule, time.Now()); len(past) > 1 {
+		skipped := make([]string, 0, len(past)-1)
+		for _, p := range past {
+			if p != slot {
+				skipped = append(skipped, p)
+			}
+		}
+		slog.Warn("schedule catch-up skips earlier slots",
+			"name", info.name,
+			"replayed", slot,
+			"skipped", skipped,
+			"hint", "这些今日已过的时段不会单独补推；定时简报按当前快照生成，请勿手工回放")
+	}
+
 	slog.Info("schedule catch-up run", "name", info.name, "slot", slot)
 	if e.fetchAndDispatchGeneration(src, info, generation) {
 		if err := e.store.Set(sourceStateBucket, key, 24*time.Hour); err != nil {
@@ -729,13 +766,15 @@ func (e *NewsEngine) mostRecentPastSlot(schedule []string) (string, bool) {
 	return mostRecentPastSlotAt(schedule, time.Now())
 }
 
-// mostRecentPastSlotAt 是 mostRecentPastSlot 的可测试版本，接受 now 作为参数
-func mostRecentPastSlotAt(schedule []string, now time.Time) (string, bool) {
+// pastSlotsAt 返回今天已过去的时间槽（HH:MM，按时间升序），供补推日志列明
+// 哪些时段被放弃。解析规则与 mostRecentPastSlotAt 保持一致。
+func pastSlotsAt(schedule []string, now time.Time) []string {
+	type slotTime struct {
+		label string
+		at    time.Time
+	}
 	loc := now.Location()
-
-	var slot string
-	var slotTime time.Time
-	found := false
+	var past []slotTime
 	for _, t := range schedule {
 		var hour, minute int
 		if _, err := fmt.Sscanf(t, "%d:%d", &hour, &minute); err != nil {
@@ -745,13 +784,23 @@ func mostRecentPastSlotAt(schedule []string, now time.Time) (string, bool) {
 		if scheduled.After(now) {
 			continue
 		}
-		if !found || scheduled.After(slotTime) {
-			slotTime = scheduled
-			slot = fmt.Sprintf("%02d:%02d", hour, minute)
-			found = true
-		}
+		past = append(past, slotTime{label: fmt.Sprintf("%02d:%02d", hour, minute), at: scheduled})
 	}
-	return slot, found
+	sort.Slice(past, func(i, j int) bool { return past[i].at.Before(past[j].at) })
+	labels := make([]string, 0, len(past))
+	for _, p := range past {
+		labels = append(labels, p.label)
+	}
+	return labels
+}
+
+// mostRecentPastSlotAt 是 mostRecentPastSlot 的可测试版本，接受 now 作为参数
+func mostRecentPastSlotAt(schedule []string, now time.Time) (string, bool) {
+	past := pastSlotsAt(schedule, now)
+	if len(past) == 0 {
+		return "", false
+	}
+	return past[len(past)-1], true
 }
 
 // calculateNextScheduledTime 计算下一个定时执行时间及其对应的时间槽（HH:MM）

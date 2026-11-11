@@ -170,6 +170,55 @@ func TestCalculateNextScheduledTimeAt(t *testing.T) {
 	})
 }
 
+func TestPastSlotsAt(t *testing.T) {
+	tests := []struct {
+		name     string
+		schedule []string
+		now      string // "15:04" on 2026-07-18
+		want     []string
+	}{
+		{
+			name:     "before all slots",
+			schedule: []string{"09:00", "12:00", "18:00"},
+			now:      "08:00",
+			want:     nil,
+		},
+		{
+			name:     "returns past slots in ascending time order regardless of config order",
+			schedule: []string{"18:00", "09:00", "12:00"},
+			now:      "19:30",
+			want:     []string{"09:00", "12:00", "18:00"},
+		},
+		{
+			name:     "boundary slot at now is included",
+			schedule: []string{"09:00", "12:00", "18:00"},
+			now:      "12:00",
+			want:     []string{"09:00", "12:00"},
+		},
+		{
+			name:     "malformed entries are skipped",
+			schedule: []string{"9am", "", "10:00"},
+			now:      "13:00",
+			want:     []string{"10:00"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			now := mustParseLocal(t, "2006-01-02 15:04", "2026-07-18 "+tt.now)
+			got := pastSlotsAt(tt.schedule, now)
+			if len(got) != len(tt.want) {
+				t.Fatalf("pastSlotsAt(%v, %s) = %v, want %v", tt.schedule, tt.now, got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("pastSlotsAt(%v, %s) = %v, want %v", tt.schedule, tt.now, got, tt.want)
+				}
+			}
+		})
+	}
+}
+
 func TestScheduleRunKey(t *testing.T) {
 	e := &NewsEngine{}
 	got := e.scheduleRunKey("vix-term", "2026-07-18", "21:35")
